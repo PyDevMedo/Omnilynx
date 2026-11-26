@@ -1,8 +1,9 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const https = require('https');
+const yaml = require('js-yaml');
 
 const isDev = !app.isPackaged;
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -162,6 +163,38 @@ function extractMetaList(code, key) {
   return list.join('|');
 }
 
+function extractDefaultSettingsFromCode(code = '') {
+  const m = code.match(/\/\/\s*==WindhawkModSettings==\s*\/\*([\s\S]*?)\*\/\s*\/\/\s*==\/WindhawkModSettings==/);
+  if (!m) return {};
+  try {
+    const parsed = yaml.load(m[1]);
+    if (!Array.isArray(parsed)) return {};
+    const out = {};
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const keys = Object.keys(item).filter((k) => !k.startsWith('$'));
+      if (keys.length > 0) {
+        out[keys[0]] = item[keys[0]];
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function ensureWindhawkRunning(restart = false) {
+  const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
+  if (!fs.existsSync(whExe)) return;
+  const args = restart ? ['-restart', '-tray-only'] : ['-tray-only'];
+  try {
+    const child = spawn(whExe, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+  } catch {
+    // ignore
+  }
+}
+
 async function compileAndRegisterWindhawkMod(modId, code) {
   const compiler = findCompiler();
   const whLib = 'C:\\Program Files\\Windhawk\\Engine\\1.7.3\\64\\windhawk.lib';
@@ -247,6 +280,14 @@ Set-ItemProperty -Path '${regPath}' -Name 'Disabled' -Value 0 -Type DWord
       '-Command',
       `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptFile}'`
     ]);
+  }
+
+  // Write default settings from ==WindhawkModSettings== if present
+  if (regRes.ok) {
+    const defaults = extractDefaultSettingsFromCode(code);
+    if (Object.keys(defaults).length > 0) {
+      await writeWindhawkModSettings(modId, defaults);
+    }
   }
 
   return { ok: regRes.ok, stderr: regRes.stderr };
@@ -649,10 +690,9 @@ if (Test-Path $profilePath) {
         res = await setWindhawkModDisabled(id, !enabled);
       }
 
-      // Reload Windhawk tray asynchronously so UI stays snappy
-      const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
-      if (res.ok && fs.existsSync(whExe)) {
-        execFile(whExe, ['-restart', '-tray-only'], { windowsHide: true }, () => {});
+      // Ensure Windhawk tray/engine is running & reloaded asynchronously
+      if (res.ok) {
+        ensureWindhawkRunning(true);
       }
 
       return {
@@ -730,10 +770,8 @@ if (Test-Path $profilePath) {
     // If Windhawk mod, write to HKLM\SOFTWARE\Windhawk\Engine\Mods\<id>\Settings and force live reload
     if (origin === 'windhawk' || isWindhawkOnlyMod(code || '')) {
       const res = await writeWindhawkModSettings(id, settings);
-      const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
-      if (res.ok && fs.existsSync(whExe)) {
-        // If mod is currently enabled, restart Windhawk silently so new settings apply immediately
-        execFile(whExe, ['-restart', '-tray-only'], { windowsHide: true }, () => {});
+      if (res.ok) {
+        ensureWindhawkRunning(true);
       }
       return {
         ok: res.ok,
