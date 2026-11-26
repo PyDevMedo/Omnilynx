@@ -146,6 +146,103 @@ function isWindhawkOnlyMod(code = '') {
   );
 }
 
+function extractMetaField(code, key, fallback = '') {
+  const m = code.match(new RegExp(`//\\s*@${key}\\s+(.*)`));
+  return m ? m[1].trim() : fallback;
+}
+
+function extractMetaList(code, key) {
+  const list = [];
+  const regex = new RegExp(`//\\s*@${key}\\s+(.*)`, 'g');
+  let m;
+  while ((m = regex.exec(code)) !== null) {
+    const val = m[1].trim();
+    if (val) list.push(val);
+  }
+  return list.join('|');
+}
+
+async function compileAndRegisterWindhawkMod(modId, code) {
+  const compiler = findCompiler();
+  const whLib = 'C:\\Program Files\\Windhawk\\Engine\\1.7.3\\64\\windhawk.lib';
+  if (!compiler || !fs.existsSync(whLib)) {
+    return { ok: false, stderr: 'Windhawk SDK / Compiler not found.' };
+  }
+
+  const version = extractMetaField(code, 'version', '1.0.0');
+  const compilerOptions = extractMetaField(code, 'compilerOptions', '');
+  const includes = extractMetaList(code, 'include');
+  const excludes = extractMetaList(code, 'exclude');
+
+  const srcPath = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
+  fs.writeFileSync(srcPath, code, 'utf8');
+
+  const dllName = `${modId}_${version}_omnilynx.dll`;
+  const localDllPath = path.join(MODS_COMPILED_DIR, dllName);
+
+  const extraFlags = compilerOptions
+    .split(/\s+/)
+    .filter((f) => f && f.startsWith('-'));
+
+  const args = [
+    '--target=x86_64-w64-windows-gnu',
+    '-std=c++23',
+    '-O2',
+    '-shared',
+    '-DWH_MOD',
+    `-DWH_MOD_ID=L"${modId}"`,
+    `-DWH_MOD_VERSION=L"${version}"`,
+    '-DUNICODE',
+    '-D_UNICODE',
+    '-include',
+    'windhawk_api.h',
+    srcPath,
+    whLib,
+    '-o',
+    localDllPath,
+    '-luser32',
+    '-lgdi32',
+    '-lshell32',
+    '-lversion',
+    ...extraFlags
+  ];
+
+  const comp = await runExecFile(compiler, args);
+  if (!comp.ok) {
+    return { ok: false, stderr: comp.stderr || comp.stdout };
+  }
+
+  const targetDll = `C:\\ProgramData\\Windhawk\\Engine\\Mods\\64\\${dllName}`;
+  const targetSrc = `C:\\ProgramData\\Windhawk\\ModsSource\\${modId}.wh.cpp`;
+  const regPath = `HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\${modId}`;
+
+  const psScript = `
+$ErrorActionPreference = 'Stop'
+Copy-Item -Path '${localDllPath}' -Destination '${targetDll}' -Force
+Copy-Item -Path '${srcPath}' -Destination '${targetSrc}' -Force
+if (-not (Test-Path '${regPath}')) { New-Item -Path '${regPath}' -Force | Out-Null }
+Set-ItemProperty -Path '${regPath}' -Name 'LibraryFileName' -Value '${dllName}' -Type String
+Set-ItemProperty -Path '${regPath}' -Name 'Include' -Value '${includes.replace(/'/g, "''")}' -Type String
+Set-ItemProperty -Path '${regPath}' -Name 'Exclude' -Value '${excludes.replace(/'/g, "''")}' -Type String
+Set-ItemProperty -Path '${regPath}' -Name 'Architecture' -Value 'x86-64' -Type String
+Set-ItemProperty -Path '${regPath}' -Name 'Version' -Value '${version}' -Type String
+Set-ItemProperty -Path '${regPath}' -Name 'Disabled' -Value 0 -Type DWord
+`;
+  const scriptFile = path.join(CONFIG_DIR, 'install_wh_mod.ps1');
+  fs.writeFileSync(scriptFile, psScript, 'utf8');
+
+  let regRes = await runExecFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile]);
+  if (!regRes.ok) {
+    regRes = await runExecFile('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptFile}'`
+    ]);
+  }
+
+  return { ok: regRes.ok, stderr: regRes.stderr };
+}
+
 async function compileModInternal(modId, code, compilerOptions = '') {
   if (isWindhawkOnlyMod(code)) {
     return {
@@ -533,7 +630,15 @@ if (Test-Path $profilePath) {
       state.mods[id] = { ...(state.mods[id] || {}), enabled };
       writeJsonSafe(STATE_FILE, state);
 
-      const res = await setWindhawkModDisabled(id, !enabled);
+      // If downloaded from Store and not yet compiled/registered into Windhawk Engine, compile & register now!
+      const expectedWhDllDir = 'C:\\ProgramData\\Windhawk\\Engine\\Mods\\64';
+      const whSrcExists = fs.existsSync(path.join(WINDHAWK_MODS_DIR, `${id}.wh.cpp`));
+      let res;
+      if (enabled && !whSrcExists && fs.existsSync(expectedWhDllDir)) {
+        res = await compileAndRegisterWindhawkMod(id, code || '');
+      } else {
+        res = await setWindhawkModDisabled(id, !enabled);
+      }
 
       // Reload Windhawk tray asynchronously so UI stays snappy
       const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
@@ -545,8 +650,8 @@ if (Test-Path $profilePath) {
         ok: res.ok,
         enabled: res.ok ? enabled : !enabled,
         message: res.ok
-          ? `Mod ${id} ${enabled ? 'enabled' : 'disabled'}!`
-          : `Admin permission required to toggle ${id}: ${res.stderr}`
+          ? `Mod ${id} ${enabled ? 'compiled & enabled' : 'disabled'}!`
+          : `Failed to activate ${id}: ${res.stderr}`
       };
     }
 
