@@ -19,10 +19,13 @@ import {
   Zap,
   Wand2,
   Eye,
-  Power
+  Power,
+  Share2,
+  Link2
 } from 'lucide-react';
 import omnilynxLogo from './assets/omnilynx-logo.png';
 import { parseModSource, createNewModTemplate } from './utils/modParser';
+import { getLocalizedModCopy } from './utils/modTranslations';
 import ModDetailsModal from './components/ModDetailsModal';
 
 // Lazy load heavy CodeMirror modals to keep idle RAM low
@@ -158,6 +161,7 @@ export default function App() {
   const [storeError, setStoreError] = useState('');
   const [storeSearch, setStoreSearch] = useState('');
   const [installingId, setInstallingId] = useState(null);
+  const [shareLinkInput, setShareLinkInput] = useState('');
 
   const [processes, setProcesses] = useState([]);
   const [procSearch, setProcSearch] = useState('');
@@ -333,6 +337,35 @@ export default function App() {
       await loadInstalled();
       setSelectedMod(null);
       showToast(`Created editable copy: ${res.id}`);
+    }
+  };
+
+  const handleShareMod = async (modId) => {
+    const repo = appConfig.modsRepo || 'PyDevMedo/Omnilynx';
+    const link = `omnilynx://install?mod=${encodeURIComponent(modId)}&repo=${encodeURIComponent(repo)}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast(
+        lang === 'ar'
+          ? `🔗 تم نسخ رابط مشاركة المود (${modId})`
+          : `🔗 Share link copied for ${modId}`
+      );
+    } catch {
+      showToast(link);
+    }
+  };
+
+  const handleInstallFromLink = async () => {
+    if (!shareLinkInput.trim()) return;
+    const res = await window.wendoAPI.installFromLink(shareLinkInput);
+    if (res.ok) {
+      setShareLinkInput('');
+      await loadInstalled();
+      showToast(
+        lang === 'ar' ? `✅ تم تثبيت المود من الرابط: ${res.id}` : `✅ Installed from link: ${res.id}`
+      );
+    } else {
+      showToast(res.error || 'Failed to install from link', true);
     }
   };
 
@@ -538,11 +571,15 @@ export default function App() {
               </div>
 
               <div className="mod-grid">
-                {filteredMods.map((mod) => (
+                {filteredMods.map((mod) => {
+                  const copy = getLocalizedModCopy(mod, lang);
+                  const imgMatch = (mod.parsed.readme || '').match(/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/);
+                  const previewImg = imgMatch ? imgMatch[1] : null;
+                  return (
                   <article key={mod.id} className={`glass-card ${mod.enabled ? 'is-on' : ''}`} style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 15, fontWeight: 700 }}>{mod.parsed.meta.name}</div>
+                        <div style={{ fontSize: 15, fontWeight: 700 }}>{copy.name}</div>
                         <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
                           v{mod.parsed.meta.version} · {mod.parsed.meta.author}
                         </div>
@@ -556,8 +593,14 @@ export default function App() {
                       </button>
                     </div>
 
+                    {previewImg && (
+                      <div style={{ height: 110, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border-subtle)', background: '#0b0e14' }}>
+                        <img src={previewImg} alt={copy.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      </div>
+                    )}
+
                     <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.55, flex: 1 }}>
-                      {mod.parsed.meta.description || '—'}
+                      {copy.desc || '—'}
                     </p>
 
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -565,12 +608,15 @@ export default function App() {
                         {mod.enabled ? t.onTag : t.offTag}
                       </span>
                       <span className="badge badge-indigo">{mod.parsed.category}</span>
-                      <span className="badge badge-slate">{mod.origin}</span>
+                      <span className="badge badge-slate">{mod.origin === 'windhawk' ? 'Omnilynx' : mod.origin}</span>
                     </div>
 
                     <div style={{ display: 'flex', gap: 8, paddingTop: 10, borderTop: '1px solid var(--border-subtle)' }}>
                       <button className="btn" style={{ flex: 1 }} onClick={() => setSelectedMod(mod)}>
                         {t.detailsBtn}
+                      </button>
+                      <button className="btn" onClick={() => handleShareMod(mod.id)} title={lang === 'ar' ? 'مشاركة رابط المود' : 'Share Mod Link'}>
+                        <Share2 size={14} />
                       </button>
                       <button className="btn" onClick={() => handleSwapMod(mod.id)} title="Swap Mod File">
                         <ArrowLeftRight size={14} />
@@ -580,7 +626,8 @@ export default function App() {
                       </button>
                     </div>
                   </article>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -631,6 +678,21 @@ export default function App() {
                   <input className="input" style={{ width: 250 }} placeholder={t.storeSearch} value={storeSearch} onChange={(e) => setStoreSearch(e.target.value)} />
                   <button className="btn" onClick={loadStore} disabled={storeLoading}>{t.refresh}</button>
                 </div>
+              </div>
+
+              {/* Install from Share Link Bar */}
+              <div className="glass-card" style={{ padding: 14, marginBottom: 18, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <Link2 size={16} color="#a5b4fc" />
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 240 }}
+                  placeholder={lang === 'ar' ? 'الصق رابط مشاركة المود هنا (omnilynx://install?mod=... أو رابط GitHub)' : 'Paste shared mod link here (omnilynx://install?mod=... or GitHub URL)'}
+                  value={shareLinkInput}
+                  onChange={(e) => setShareLinkInput(e.target.value)}
+                />
+                <button className="btn btn-primary" onClick={handleInstallFromLink}>
+                  {lang === 'ar' ? '⬇️ تثبيت من الرابط' : '⬇️ Install from Link'}
+                </button>
               </div>
 
               {storeError && <div style={{ padding: 12, borderRadius: 10, background: 'rgba(239,68,68,0.14)', color: '#fca5a5', marginBottom: 14 }}>{storeError}</div>}
@@ -735,6 +797,7 @@ export default function App() {
       {selectedMod && (
         <ModDetailsModal
           mod={selectedMod}
+          lang={lang}
           onClose={() => setSelectedMod(null)}
           onSaveSettings={async (id, settings, modObj) => {
             const res = await window.wendoAPI.saveModSettings({ id, settings, origin: modObj?.origin, code: modObj?.code });
@@ -745,6 +808,7 @@ export default function App() {
           onDelete={async (id) => { await window.wendoAPI.deleteMod(id); setSelectedMod(null); await loadInstalled(); showToast(`Deleted ${id}`); }}
           onSwap={handleSwapMod}
           onDuplicate={handleDuplicateMod}
+          onShare={handleShareMod}
           onCompileAndInject={handleCompileAndInject}
           onEject={handleEject}
         />
@@ -762,10 +826,12 @@ export default function App() {
         {previewStoreItem && (
           <StorePreviewModal
             item={previewStoreItem}
+            lang={lang}
             isInstalled={installedIds.has(previewStoreItem.id)}
             installing={installingId === previewStoreItem.id}
             onClose={() => setPreviewStoreItem(null)}
             onInstall={handleInstallStoreMod}
+            onShare={handleShareMod}
           />
         )}
       </Suspense>

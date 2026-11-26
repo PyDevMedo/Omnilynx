@@ -326,6 +326,37 @@ app.commandLine.appendSwitch('renderer-process-limit', '1');
 app.commandLine.appendSwitch('disable-background-networking');
 app.commandLine.appendSwitch('disable-features', 'Spellcheck,AutofillServerCommunication');
 
+const translationCache = new Map();
+
+async function translateTextCached(text, targetLang = 'ar') {
+  if (!text || text.length < 3) return text;
+  const key = `${targetLang}:${text.slice(0, 120)}:${text.length}`;
+  if (translationCache.has(key)) return translationCache.get(key);
+
+  try {
+    // Preserve markdown image tags while translating surrounding text
+    const images = [];
+    const masked = text.replace(/!\[[^\]]*\]\([^)]+\)/g, (match) => {
+      images.push(match);
+      return `__IMG_${images.length - 1}__`;
+    });
+
+    const chunk = masked.slice(0, 1800);
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${targetLang}&dt=t&q=${encodeURIComponent(chunk)}`;
+    const json = await httpsGetJson(url);
+    let translated = Array.isArray(json?.[0]) ? json[0].map((seg) => seg[0]).join('') : text;
+
+    images.forEach((imgTag, idx) => {
+      translated = translated.replace(`__IMG_${idx}__`, imgTag);
+    });
+
+    translationCache.set(key, translated);
+    return translated;
+  } catch {
+    return text;
+  }
+}
+
 function createWindow() {
   const iconPath = path.join(ROOT_DIR, 'public', 'omnilynx-logo.png');
   const win = new BrowserWindow({
@@ -651,6 +682,54 @@ app.whenReady().then(() => {
 
   ipcMain.handle('store:fetchModSource', async (_, { downloadUrl }) => {
     return await httpsGetText(downloadUrl);
+  });
+
+  ipcMain.handle('mods:installFromLink', async (_, rawLink) => {
+    const link = String(rawLink || '').trim();
+    if (!link) return { ok: false, error: 'Empty link' };
+
+    let modId = '';
+    let downloadUrl = '';
+
+    if (link.startsWith('omnilynx://')) {
+      try {
+        const u = new URL(link);
+        modId = u.searchParams.get('mod') || '';
+        const repo = u.searchParams.get('repo') || 'PyDevMedo/Omnilynx';
+        if (modId) {
+          downloadUrl = `https://raw.githubusercontent.com/${repo}/main/mods/${modId}.wh.cpp`;
+        }
+      } catch {
+        return { ok: false, error: 'Invalid omnilynx:// link' };
+      }
+    } else if (link.startsWith('http://') || link.startsWith('https://')) {
+      downloadUrl = link
+        .replace('https://github.com/', 'https://raw.githubusercontent.com/')
+        .replace('/blob/', '/');
+      const parts = downloadUrl.split('/');
+      const last = parts[parts.length - 1] || 'shared-mod.wh.cpp';
+      modId = last.replace(/\.wh\.cpp$/, '').replace(/\.cpp$/, '');
+    } else {
+      // Allow plain mod ID too
+      modId = link.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+      downloadUrl = `https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/${modId}.wh.cpp`;
+    }
+
+    if (!modId || !downloadUrl) return { ok: false, error: 'Could not parse mod link' };
+
+    try {
+      const code = await httpsGetText(downloadUrl);
+      const safeId = modId.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+      const dest = path.join(MODS_SOURCE_DIR, `${safeId}.wh.cpp`);
+      fs.writeFileSync(dest, code, 'utf8');
+      return { ok: true, id: safeId, filePath: dest };
+    } catch (e) {
+      return { ok: false, error: `Download failed: ${e.message}` };
+    }
+  });
+
+  ipcMain.handle('app:translateText', async (_, { text, targetLang }) => {
+    return await translateTextCached(text, targetLang || 'ar');
   });
 
   // IPC: Windows Quick Tweaks (direct HKCU registry + Explorer broadcast)

@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('wendoAPI', {
   // Explore (GitHub Store)
   fetchStoreIndex: (repoUrl) => ipcRenderer.invoke('store:fetchIndex', repoUrl),
   fetchStoreModSource: (payload) => ipcRenderer.invoke('store:fetchModSource', payload),
+  installFromLink: (link) => ipcRenderer.invoke('mods:installFromLink', link),
+  translateText: (payload) => ipcRenderer.invoke('app:translateText', payload),
 
   // Windows Quick Tweaks (instant system-wide changes)
   getTweaks: () => ipcRenderer.invoke('tweaks:getAll'),

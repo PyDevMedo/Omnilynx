@@ -3,15 +3,17 @@ import { marked } from 'marked';
 import CodeMirror from '@uiw/react-codemirror';
 import { cpp } from '@codemirror/lang-cpp';
 import { oneDark } from '@codemirror/theme-one-dark';
-import { X, Download, CheckCircle2, FileText, Sliders, Code2, ExternalLink } from 'lucide-react';
+import { X, Download, CheckCircle2, FileText, Sliders, Code2, ExternalLink, Share2 } from 'lucide-react';
 import { parseModSource } from '../utils/modParser';
 import omnilynxLogo from '../assets/omnilynx-logo.png';
 
-export default function StorePreviewModal({ item, isInstalled, installing, onClose, onInstall }) {
+export default function StorePreviewModal({ item, lang = 'ar', isInstalled, installing, onClose, onInstall, onShare }) {
   const [tab, setTab] = useState('readme');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [code, setCode] = useState('');
+  const [translatedReadme, setTranslatedReadme] = useState('');
+  const [translatedDesc, setTranslatedDesc] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -37,13 +39,36 @@ export default function StorePreviewModal({ item, isInstalled, installing, onClo
   }, [item.downloadUrl]);
 
   const parsed = useMemo(() => parseModSource(code, item.id), [code, item.id]);
+
+  useEffect(() => {
+    let active = true;
+    if (!loading && lang === 'ar') {
+      if (parsed.readme) {
+        window.wendoAPI?.translateText({ text: parsed.readme, targetLang: 'ar' }).then((res) => {
+          if (active && res) setTranslatedReadme(res);
+        });
+      }
+      if (parsed.meta.description) {
+        window.wendoAPI?.translateText({ text: parsed.meta.description, targetLang: 'ar' }).then((res) => {
+          if (active && res) setTranslatedDesc(res);
+        });
+      }
+    } else {
+      setTranslatedReadme('');
+      setTranslatedDesc('');
+    }
+    return () => {
+      active = false;
+    };
+  }, [loading, lang, parsed.readme, parsed.meta.description]);
+
   const readmeHtml = useMemo(() => {
-    const cleanReadme = (parsed.readme || '*No README provided for this mod.*')
-      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
-      .replace(/<img[^>]*>/gi, '')
-      .replace(/windhawk/gi, 'Omnilynx');
-    return marked.parse(cleanReadme);
-  }, [parsed.readme]);
+    const textToRender =
+      lang === 'ar' && translatedReadme
+        ? translatedReadme
+        : parsed.readme || '*No README provided for this mod.*';
+    return marked.parse(textToRender.replace(/windhawk/gi, 'Omnilynx'));
+  }, [parsed.readme, lang, translatedReadme]);
 
   return (
     <div
@@ -105,6 +130,11 @@ export default function StorePreviewModal({ item, isInstalled, installing, onClo
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {onShare && (
+              <button className="btn" onClick={() => onShare(item.id)} title="Share Mod Link">
+                <Share2 size={14} /> {lang === 'ar' ? 'مشاركة' : 'Share'}
+              </button>
+            )}
             {item.htmlUrl && (
               <button
                 className="btn"
@@ -189,7 +219,7 @@ export default function StorePreviewModal({ item, isInstalled, installing, onClo
             <div>
               {parsed.meta.description && (
                 <p style={{ color: 'var(--text-primary)', marginBottom: 14, fontSize: 14 }}>
-                  {parsed.meta.description}
+                  {(lang === 'ar' && translatedDesc) ? translatedDesc : parsed.meta.description}
                 </p>
               )}
               {parsed.meta.include?.length > 0 && (

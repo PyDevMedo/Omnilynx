@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { marked } from 'marked';
 import {
   X,
@@ -11,22 +11,49 @@ import {
   FileText,
   Sliders,
   ArrowLeftRight,
-  Copy
+  Copy,
+  Share2
 } from 'lucide-react';
 import omnilynxLogo from '../assets/omnilynx-logo.png';
 
 export default function ModDetailsModal({
   mod,
+  lang = 'ar',
   onClose,
   onSaveSettings,
   onEditCode,
   onDelete,
   onSwap,
   onDuplicate,
+  onShare,
   onCompileAndInject,
   onEject
 }) {
   const [tab, setTab] = useState(mod.parsed.settingsSchema.length > 0 ? 'settings' : 'details');
+  const [translatedReadme, setTranslatedReadme] = useState('');
+  const [translatedDesc, setTranslatedDesc] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    if (lang === 'ar') {
+      if (mod.parsed.readme) {
+        window.wendoAPI?.translateText({ text: mod.parsed.readme, targetLang: 'ar' }).then((res) => {
+          if (active && res) setTranslatedReadme(res);
+        });
+      }
+      if (mod.parsed.meta.description) {
+        window.wendoAPI?.translateText({ text: mod.parsed.meta.description, targetLang: 'ar' }).then((res) => {
+          if (active && res) setTranslatedDesc(res);
+        });
+      }
+    } else {
+      setTranslatedReadme('');
+      setTranslatedDesc('');
+    }
+    return () => {
+      active = false;
+    };
+  }, [lang, mod.id, mod.parsed.readme, mod.parsed.meta.description]);
   const [formValues, setFormValues] = useState(() => {
     const initial = { ...(mod.settings || {}) };
     for (const field of mod.parsed.settingsSchema) {
@@ -41,12 +68,12 @@ export default function ModDetailsModal({
   const [busy, setBusy] = useState(false);
 
   const readmeHtml = useMemo(() => {
-    const clean = (mod.parsed.readme || '*No README provided for this mod.*')
-      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
-      .replace(/<img[^>]*>/gi, '')
-      .replace(/windhawk/gi, 'Omnilynx');
-    return marked.parse(clean);
-  }, [mod.parsed.readme]);
+    const textToRender =
+      lang === 'ar' && translatedReadme
+        ? translatedReadme
+        : mod.parsed.readme || '*No README provided for this mod.*';
+    return marked.parse(textToRender.replace(/windhawk/gi, 'Omnilynx'));
+  }, [mod.parsed.readme, lang, translatedReadme]);
 
   const handleSave = async () => {
     setBusy(true);
@@ -237,11 +264,16 @@ export default function ModDetailsModal({
             <Cpu size={14} /> Run & Manage
           </button>
           <div style={{ flex: 1 }} />
+          {onShare && (
+            <button className="btn" onClick={() => onShare(mod.id)}>
+              <Share2 size={14} /> {lang === 'ar' ? 'مشاركة رابط' : 'Share Link'}
+            </button>
+          )}
           <button className="btn" onClick={() => onSwap(mod.id)}>
-            <ArrowLeftRight size={14} /> Swap File
+            <ArrowLeftRight size={14} /> {lang === 'ar' ? 'تبديل الملف' : 'Swap File'}
           </button>
           <button className="btn" onClick={() => onEditCode(mod)}>
-            <Code2 size={14} /> Edit Source
+            <Code2 size={14} /> {lang === 'ar' ? 'تعديل الكود' : 'Edit Source'}
           </button>
         </div>
 
@@ -292,7 +324,7 @@ export default function ModDetailsModal({
           {tab === 'details' && (
             <div>
               <p style={{ color: 'var(--text-primary)', marginBottom: 14, fontSize: 14 }}>
-                {mod.parsed.meta.description}
+                {(lang === 'ar' && translatedDesc) ? translatedDesc : mod.parsed.meta.description}
               </p>
               {mod.parsed.meta.include?.length > 0 && (
                 <div style={{ marginBottom: 16, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
