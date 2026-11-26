@@ -1,0 +1,257 @@
+{
+  "mods": {
+    "overhaulded-alt-tab": {
+      "settings": {
+        "Appearance": [
+          {
+            "Scale": "100",
+            "$name": "Scale",
+            "$description": "Overall task switcher scale.",
+            "$options": [
+              {
+                "50": "50%"
+              },
+              {
+                "75": "75%"
+              },
+              {
+                "90": "90%"
+              },
+              {
+                "100": "100%"
+              },
+              {
+                "110": "110%"
+              },
+              {
+                "125": "125%"
+              }
+            ]
+          },
+          {
+            "PerformanceMode": "smooth",
+            "$name": "Performance mode",
+            "$description": "Controls the animation update frequency.",
+            "$options": [
+              {
+                "smooth": "Smooth"
+              },
+              {
+                "balanced": "Balanced"
+              }
+            ]
+          },
+          {
+            "AnimationSpeed": "100",
+            "$name": "Animation speed",
+            "$description": "Relative speed of the task switcher animations.",
+            "$options": [
+              {
+                "75": "75%"
+              },
+              {
+                "100": "100%"
+              },
+              {
+                "125": "125%"
+              },
+              {
+                "150": "150%"
+              }
+            ]
+          },
+          {
+            "AnimationStyle": "Linear",
+            "$name": "Animation style",
+            "$description": "Open and close animation. Linear is standard, Bouncy adds a pronounced bounce, and RCT is a CRT-style collapse and expansion.",
+            "$options": [
+              {
+                "Linear": "Linear"
+              },
+              {
+                "Bouncy": "Bouncy"
+              },
+              {
+                "RCT": "RCT"
+              }
+            ]
+          },
+          {
+            "Cards": [
+              {
+                "VisibleCards": "5",
+                "$name": "Visible cards",
+                "$description": "Number of cards shown in the carousel.",
+                "$options": [
+                  {
+                    "3": "3 cards"
+                  },
+                  {
+                    "5": "5 cards"
+                  }
+                ]
+              },
+              {
+                "NormalColor": "#050507",
+                "$name": "Cards color",
+                "$description": "Base color of the cards that are not selected. Default Hex -"
+              },
+              {
+                "SelectedColor": "#090A0B",
+                "$name": "Selected card color",
+                "$description": "Base color of the selected card. Default Hex -"
+              },
+              {
+                "ExpandSelectedWindow": true,
+                "$name": "Expand selected window",
+                "$description": "Animates the selected card toward the selected window when confirmed."
+              }
+            ],
+            "$name": "Cards"
+          }
+        ],
+        "Background": "dwm",
+        "Dwm": [
+          {
+            "BackgroundColor": "#141A22",
+            "$name": "Background color",
+            "$description": "Color of the transparent DWM background behind the cards. Default Hex -"
+          },
+          {
+            "Opacity": 20,
+            "$name": "Opacity",
+            "$description": "DWM background opacity (0-100). Default - 20."
+          }
+        ],
+        "ExperimentalSettings": [
+          {
+            "GeneralBackground": "none",
+            "$name": "General Background",
+            "$description": "Experimental features may require additional GPU, CPU and RAM resources and may affect performance. Pattern Waves requires a background other than None.",
+            "$options": [
+              {
+                "none": "None"
+              },
+              {
+                "pattern": "Pattern Waves"
+              }
+            ]
+          },
+          {
+            "PatternWaves": [
+              {
+                "Shape": "dots",
+                "$name": "Shape",
+                "$description": "Pattern shape.",
+                "$options": [
+                  {
+                    "dots": "Dots"
+                  },
+                  {
+                    "squares": "Squares"
+                  }
+                ]
+              },
+              {
+                "Speed": 100,
+                "$name": "Speed",
+                "$description": "Procedural wave speed (0-200)."
+              },
+              {
+                "WaveStrength": 65,
+                "$name": "Wave strength",
+                "$description": "Surface deformation intensity (0-200)."
+              },
+              {
+                "Density": 24,
+                "$name": "Density",
+                "$description": "Dot spacing (8-48)."
+              },
+              {
+                "Light": 120,
+                "$name": "Light",
+                "$description": "Apparent depth and illumination (0-200)."
+              },
+              {
+                "Contrast": 100,
+                "$name": "Contrast",
+                "$description": "Dot contrast (0-200)."
+              },
+              {
+                "Opacity": 100,
+                "$name": "Opacity",
+                "$description": "Pattern opacity (0-100)."
+              },
+              {
+                "CursorInteraction": true,
+                "$name": "Cursor interaction",
+                "$description": "Enable cursor-driven ripples."
+              },
+              {
+                "CursorStrength": 100,
+                "$name": "Cursor strength",
+                "$description": "Cursor ripple intensity (0-200)."
+              }
+            ],
+            "$name": "Pattern Waves"
+          }
+        ]
+      },
+      "enabled": false
+    },
+    "translucent-windows": {
+      "enabled": false
+    },
+    "windows-11-start-menu-styler": {
+      "enabled": false,
+      "settings": {
+        "theme": "FullScreen",
+        "disableNewStartMenuLayout": "legacyClassicLayout",
+        "styleConstants": [
+          ""
+        ],
+        "controlStyles": [
+          [
+            {
+              "target": "",
+              "$name": "Target"
+            },
+            {
+              "styles": [
+                ""
+              ],
+              "$name": "Styles"
+            }
+          ]
+        ],
+        "themeResourceVariables": [
+          ""
+        ],
+        "webContentStyles": [
+          [
+            {
+              "target": "",
+              "$name": "Target"
+            },
+            {
+              "styles": [
+                ""
+              ],
+              "$name": "Styles"
+            }
+          ]
+        ],
+        "webContentCustomJs": ""
+      }
+    },
+    "windows-animations": {
+      "enabled": false
+    },
+    "taskbar-dock-animation-plus": {
+      "enabled": false
+    },
+    "wendo-translucent-mica": {
+      "enabled": false
+    }
+  }
+}

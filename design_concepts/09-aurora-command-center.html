@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" data-theme="aurora">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wendo Studio — Concept 09: Aurora Command Center</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #040711;
+      --card: rgba(12, 18, 34, 0.72);
+      --card-2: rgba(18, 26, 48, 0.9);
+      --border: rgba(56, 189, 248, 0.16);
+      --border-soft: rgba(255, 255, 255, 0.08);
+      --primary: #38bdf8;
+      --secondary: #a855f7;
+      --power: #10b981;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+    }
+    html[data-theme="frost"] {
+      --bg: #f1f5f9;
+      --card: rgba(255, 255, 255, 0.82);
+      --card-2: rgba(255, 255, 255, 0.96);
+      --border: rgba(59, 130, 246, 0.22);
+      --border-soft: rgba(15, 23, 42, 0.08);
+      --primary: #2563eb;
+      --secondary: #7c3aed;
+      --text: #0f172a;
+      --muted: #475569;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Cairo', 'Plus Jakarta Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+      transition: background 0.3s ease, color 0.2s ease;
+    }
+    html[dir="ltr"] body { font-family: 'Plus Jakarta Sans', 'Cairo', sans-serif; }
+
+    .mesh {
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background:
+        radial-gradient(50% 45% at 15% 10%, rgba(56, 189, 248, 0.16), transparent 65%),
+        radial-gradient(50% 45% at 85% 20%, rgba(168, 85, 247, 0.14), transparent 65%),
+        radial-gradient(45% 40% at 50% 95%, rgba(16, 185, 129, 0.10), transparent 65%);
+    }
+
+    .container {
+      position: relative; z-index: 1;
+      max-width: 1360px; margin: 0 auto;
+      padding: 18px 24px 40px;
+      display: flex; flex-direction: column; gap: 18px;
+    }
+
+    /* Top Floating Command Header */
+    .header {
+      display: flex; align-items: center; justify-content: space-between; gap: 14px;
+      padding: 10px 18px; border-radius: 18px;
+      background: var(--card); border: 1px solid var(--border);
+      backdrop-filter: blur(22px);
+      flex-wrap: wrap;
+    }
+    .logo-wrap { display: flex; align-items: center; gap: 10px; }
+    .logo-box {
+      width: 34px; height: 34px; border-radius: 10px;
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      display: grid; place-items: center; font-size: 17px; color: #fff;
+      box-shadow: 0 6px 18px rgba(56, 189, 248, 0.35);
+    }
+
+    /* Pill Tabs in Center */
+    .pill-nav {
+      display: flex; gap: 4px; padding: 4px; border-radius: 99px;
+      background: rgba(255,255,255,0.04); border: 1px solid var(--border-soft);
+    }
+    .pill-tab {
+      padding: 7px 14px; border-radius: 99px; font-size: 12.5px; font-weight: 700;
+      color: var(--muted); border: none; background: transparent; cursor: pointer;
+      font-family: inherit; transition: .18s;
+    }
+    .pill-tab.active {
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      color: #fff; box-shadow: 0 4px 14px rgba(56, 189, 248, 0.28);
+    }
+
+    /* Bento Grid: Left Main + Right Stage */
+    .bento {
+      display: grid; grid-template-columns: 1fr 350px; gap: 18px; align-items: start;
+    }
+    @media (max-width: 1060px) { .bento { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 20px; backdrop-filter: blur(22px);
+    }
+
+    /* 1-Click Presets Strip */
+    .presets-bar {
+      display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center;
+    }
+    .preset-chip {
+      padding: 8px 14px; border-radius: 12px; font-size: 12.5px; font-weight: 700;
+      background: var(--card); border: 1px solid var(--border-soft);
+      color: var(--text); cursor: pointer; font-family: inherit; transition: .18s;
+    }
+    .preset-chip:hover { border-color: var(--primary); transform: translateY(-1px); }
+
+    /* Quote Strip */
+    .quote-strip {
+      padding: 14px 18px; border-radius: 16px; margin-bottom: 16px;
+      background: linear-gradient(135deg, rgba(56,189,248,0.12), rgba(168,85,247,0.10));
+      border: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    }
+
+    /* Mod Cards */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(275px, 1fr)); gap: 14px; }
+    .card {
+      padding: 18px; border-radius: 18px;
+      background: var(--card); border: 1px solid var(--border-soft);
+      display: flex; flex-direction: column; gap: 12px;
+      transition: all 0.22s ease;
+    }
+    .card:hover { border-color: var(--border); transform: translateY(-2px); }
+    .card.is-on {
+      border-color: rgba(16, 185, 129, 0.5);
+      box-shadow: 0 12px 30px rgba(16, 185, 129, 0.09);
+    }
+
+    /* Compact 30px Power Switch */
+    .pwr {
+      width: 30px; height: 30px; border-radius: 50%;
+      border: 1.5px solid rgba(148,163,184,0.32);
+      background: radial-gradient(circle at 30% 30%, #1e293b, #090d16);
+      color: #64748b; display: grid; place-items: center;
+      cursor: pointer; flex-shrink: 0; transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .pwr svg { width: 13px; height: 13px; }
+    .pwr:hover { transform: scale(1.1); }
+    .pwr.on {
+      border-color: #34d399;
+      background: radial-gradient(circle at 35% 30%, #10b981, #059669);
+      color: #fff;
+      box-shadow: 0 0 12px rgba(16,185,129,0.6), 0 0 22px rgba(16,185,129,0.22);
+    }
+
+    .star-btn {
+      background: transparent; border: none; cursor: pointer; font-size: 15px;
+      opacity: 0.45; transition: .15s;
+    }
+    .star-btn.fav { opacity: 1; transform: scale(1.15); }
+
+    .btn {
+      padding: 7px 12px; border-radius: 10px; border: 1px solid var(--border-soft);
+      background: rgba(255,255,255,0.06); color: var(--text);
+      font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: .15s;
+    }
+    .btn:hover { background: rgba(255,255,255,0.12); }
+
+    /* Live Desktop Stage */
+    .stage-panel { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+    .stage {
+      height: 215px; border-radius: 14px; padding: 14px;
+      background:
+        radial-gradient(circle at 20% 25%, #38bdf8, transparent 55%),
+        radial-gradient(circle at 80% 75%, #a855f7, transparent 55%),
+        linear-gradient(135deg, #0b1120, #1e1b4b);
+      border: 1px solid var(--border);
+      display: flex; flex-direction: column; justify-content: space-between;
+    }
+    .mini-win {
+      width: 85%; margin: 4px auto 0; border-radius: 10px; overflow: hidden;
+      background: rgba(248,250,252,0.92); color: #0f172a;
+      box-shadow: 0 14px 30px rgba(0,0,0,0.45); transition: all .3s ease;
+    }
+    .mini-win.dark { background: rgba(15,23,42,0.92); color: #f8fafc; }
+    .mini-win.mica { backdrop-filter: blur(14px); background: rgba(15,23,42,0.62); border: 1px solid rgba(255,255,255,0.2); }
+    .mini-tb {
+      height: 26px; border-radius: 8px; background: rgba(15,23,42,0.85);
+      display: flex; align-items: center; justify-content: center; gap: 8px; transition: .3s;
+    }
+    .mini-tb.dock { width: 64%; margin: 0 auto; border-radius: 99px; background: rgba(15,23,42,0.62); backdrop-filter: blur(12px); }
+    .tb-dot { width: 11px; height: 11px; border-radius: 3px; background: rgba(255,255,255,0.25); }
+    .tb-dot.a { background: var(--primary); }
+
+    /* Command Palette Modal (Ctrl+K) */
+    .cmd-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.65); backdrop-filter: blur(8px);
+      display: none; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 60;
+    }
+    .cmd-backdrop.open { display: flex; }
+    .cmd-box {
+      width: 100%; max-width: 500px; border-radius: 16px; padding: 14px;
+      background: var(--card-2); border: 1px solid var(--border);
+      box-shadow: 0 24px 60px rgba(0,0,0,0.55);
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .cmd-input {
+      width: 100%; padding: 11px 14px; border-radius: 10px;
+      border: 1px solid var(--border-soft); background: rgba(0,0,0,0.2);
+      color: var(--text); font-family: inherit; font-size: 13.5px; outline: none;
+    }
+
+    .toast {
+      position: fixed; bottom: 20px; inset-inline-end: 24px;
+      padding: 10px 16px; border-radius: 12px;
+      background: var(--card-2); border: 1px solid var(--primary);
+      color: var(--text); font-size: 13px; font-weight: 600;
+      opacity: 0; transform: translateY(8px); pointer-events: none; transition: .25s; z-index: 90;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+  <div class="mesh"></div>
+  <div class="container">
+    <!-- Floating Top Command Header -->
+    <header class="header">
+      <div class="logo-wrap">
+        <div class="logo-box">🌌</div>
+        <div>
+          <div style="font-size:15px; font-weight:800;" id="brandTitle">ويندو ستوديو · Aurora</div>
+          <div style="font-size:11px; color:var(--muted);" id="brandSub">مركز القيادة والتخصيص</div>
+        </div>
+      </div>
+
+      <nav class="pill-nav">
+        <button class="pill-tab active" onclick="setTab('mods', this)" id="tabMods">🧩 المودات</button>
+        <button class="pill-tab" onclick="setTab('tweaks', this)" id="tabTweaks">⚡ تعديلات فورية</button>
+        <button class="pill-tab" onclick="setTab('store', this)" id="tabStore">🛒 المتجر</button>
+      </nav>
+
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button class="btn" onclick="openCmd()" id="cmdBtn">🔍 Ctrl+K</button>
+        <button class="btn" onclick="toggleTheme()" id="themeBtn">☀️ Frost</button>
+        <button class="btn" onclick="toggleLang()" id="langBtn">🌐 English</button>
+      </div>
+    </header>
+
+    <div class="bento">
+      <!-- Left Workspace -->
+      <div>
+        <div class="quote-strip">
+          <div style="font-size:13.5px; font-weight:700;" id="quoteText"></div>
+          <button class="btn" onclick="nextQuote()">🔄</button>
+        </div>
+
+        <!-- 1-Click Presets -->
+        <div class="presets-bar">
+          <span style="font-size:12.5px; font-weight:700; color:var(--muted);" id="presetLabel">🎨 باقات سريعة:</span>
+          <button class="preset-chip" onclick="applyPreset('mac')">💎 macOS Glass</button>
+          <button class="preset-chip" onclick="applyPreset('dark')">🌙 Night Pro</button>
+          <button class="preset-chip" onclick="applyPreset('reset')">🛡️ Reset Default</button>
+        </div>
+
+        <div class="grid" id="grid"></div>
+      </div>
+
+      <!-- Right Live Preview -->
+      <aside class="panel stage-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong style="font-size:14px;" id="stageTitle">🖥️ معاينة حية</strong>
+          <span style="font-size:11.5px; font-weight:700; color:var(--power);" id="activeBadge">⚡ 2 Active</span>
+        </div>
+
+        <div class="stage">
+          <div class="mini-win" id="miniWin">
+            <div style="padding:6px 10px; font-size:10px; font-weight:700; display:flex; justify-content:space-between; border-bottom:1px solid rgba(148,163,184,0.2);">
+              <span>📄 Wendo Live</span><span>— ▢ ✕</span>
+            </div>
+            <div style="padding:12px; font-size:11px;" id="miniBody">جرّب الباقات أو شريط الشفافية المباشر! ✨</div>
+          </div>
+          <div class="mini-tb" id="miniTb">
+            <div class="tb-dot a"></div><div class="tb-dot"></div><div class="tb-dot"></div><div class="tb-dot"></div>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--muted);">
+          <span>⚡ CPU 1.2%</span>
+          <span>🧠 RAM 58 MB</span>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Ctrl+K Command Palette -->
+  <div class="cmd-backdrop" id="cmdBackdrop" onclick="if(event.target===this) closeCmd()">
+    <div class="cmd-box">
+      <input class="cmd-input" id="cmdInput" placeholder="🔍 اكتب اسم أي مود أو باقة..." oninput="renderCmd()" />
+      <div id="cmdResults" style="display:flex; flex-direction:column; gap:6px;"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let lang = 'ar';
+    let theme = 'aurora';
+    let tab = 'mods';
+    let qIdx = 0;
+    let opacityVal = 84;
+
+    const i18n = {
+      ar: {
+        brandTitle: 'ويندو ستوديو · Aurora', brandSub: 'مركز القيادة والتخصيص',
+        tabMods: '🧩 المودات', tabTweaks: '⚡ تعديلات فورية', tabStore: '🛒 المتجر',
+        presetLabel: '🎨 باقات سريعة:', stageTitle: '🖥️ معاينة حية',
+        miniBody: 'جرّب الباقات أو شريط الشفافية المباشر! ✨',
+        onTxt: '⚡ يعمل', offTxt: '⏸️ متوقف',
+        activeTxt: (n) => `⚡ ${n} نشط`,
+        langBtn: '🌐 English', themeBtn: () => theme === 'aurora' ? '☀️ Frost' : '🌌 Aurora',
+        quotes: [
+          '«التصميم الذكي يختصر خطواتك ويمنحك متعة التحكم في كل تفصيلة.» 🌌',
+          '«باقة واحدة بضغطة زر تغيّر مزاج يومك بالكامل.» ✨'
+        ]
+      },
+      en: {
+        brandTitle: 'Wendo Studio · Aurora', brandSub: 'Command & Customization Center',
+        tabMods: '🧩 Mods', tabTweaks: '⚡ Quick Tweaks', tabStore: '🛒 Store',
+        presetLabel: '🎨 1-Click Presets:', stageTitle: '🖥️ Live Stage',
+        miniBody: 'Try the 1-click presets or inline opacity slider! ✨',
+        onTxt: '⚡ Active', offTxt: '⏸️ Standby',
+        activeTxt: (n) => `⚡ ${n} Active`,
+        langBtn: '🌐 العربية', themeBtn: () => theme === 'aurora' ? '☀️ Frost' : '🌌 Aurora',
+        quotes: [
+          '“Smart design shortens every workflow and makes control effortless.” 🌌',
+          '“One preset click can transform your entire desktop mood.” ✨'
+        ]
+      }
+    };
+
+    const mods = [
+      { id: 'mica', on: true, fav: true, ar: { title: '🪟 زجاج Mica الشفاف', desc: 'خامة زجاجية أنيقة لنوافذ ويندوز 11.' }, en: { title: '🪟 Translucent Mica', desc: 'Native Windows 11 Acrylic & Mica glass.' } },
+      { id: 'dark', on: true, fav: false, ar: { title: '🌙 تعتيم شريط العنوان', desc: 'تفعيل الوضع الليلي على إطارات البرامج.' }, en: { title: '🌙 Dark Titlebars', desc: 'Immersive dark borders across Win32 apps.' } },
+      { id: 'dock', on: false, fav: true, ar: { title: '🎨 شريط مهام عائم', desc: 'شريط مهام دائري عائم بتأثير الضباب.' }, en: { title: '🎨 Floating Dock', desc: 'Rounded floating glass taskbar.' } },
+      { id: 'opacity', on: false, fav: false, hasSlider: true, ar: { title: '✨ شفافية النوافذ', desc: 'تحكم فوري في درجة الشفافية من الكارت.' }, en: { title: '✨ Glass Opacity', desc: 'Adjust transparency directly from the card.' } }
+    ];
+
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg; el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 2500);
+    }
+
+    function applyPreset(name) {
+      if (name === 'mac') {
+        mods.forEach(m => m.on = ['mica', 'dark', 'dock', 'opacity'].includes(m.id));
+        showToast('💎 Applied macOS Glass Preset!');
+      } else if (name === 'dark') {
+        mods.forEach(m => m.on = ['mica', 'dark'].includes(m.id));
+        showToast('🌙 Applied Night Pro Preset!');
+      } else {
+        mods.forEach(m => m.on = false);
+        showToast('🛡️ Reset to Windows Default');
+      }
+      render();
+    }
+
+    function setTab(tName, btn) {
+      tab = tName;
+      document.querySelectorAll('.pill-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      render();
+    }
+
+    function toggleTheme() {
+      theme = theme === 'aurora' ? 'frost' : 'aurora';
+      document.documentElement.setAttribute('data-theme', theme);
+      render();
+    }
+
+    function toggleLang() { lang = lang === 'ar' ? 'en' : 'ar'; render(); }
+    function nextQuote() { qIdx = (qIdx + 1) % i18n[lang].quotes.length; render(); }
+
+    function toggleMod(id) {
+      const m = mods.find(x => x.id === id);
+      if (m) { m.on = !m.on; showToast(`${m[lang].title}: ${m.on ? i18n[lang].onTxt : i18n[lang].offTxt}`); }
+      render();
+    }
+
+    function toggleFav(id) {
+      const m = mods.find(x => x.id === id);
+      if (m) m.fav = !m.fav;
+      render();
+    }
+
+    function openCmd() { document.getElementById('cmdBackdrop').classList.add('open'); document.getElementById('cmdInput').focus(); renderCmd(); }
+    function closeCmd() { document.getElementById('cmdBackdrop').classList.remove('open'); }
+    function renderCmd() {
+      const q = document.getElementById('cmdInput').value.toLowerCase();
+      document.getElementById('cmdResults').innerHTML = mods
+        .filter(m => (m.ar.title + m.en.title).toLowerCase().includes(q))
+        .map(m => `<button class="btn" style="text-align:start; display:flex; justify-content:space-between;" onclick="toggleMod('${m.id}'); closeCmd();"><span>${m[lang].title}</span><span>${m.on ? '⚡' : '⏸️'}</span></button>`)
+        .join('');
+    }
+    window.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openCmd(); } });
+
+    function render() {
+      const t = i18n[lang];
+      document.documentElement.lang = lang;
+      document.documentElement.dir = lang === 'ar' ? 'rtl' : 'ltr';
+
+      document.getElementById('brandTitle').textContent = t.brandTitle;
+      document.getElementById('brandSub').textContent = t.brandSub;
+      document.getElementById('tabMods').textContent = t.tabMods;
+      document.getElementById('tabTweaks').textContent = t.tabTweaks;
+      document.getElementById('tabStore').textContent = t.tabStore;
+      document.getElementById('presetLabel').textContent = t.presetLabel;
+      document.getElementById('stageTitle').textContent = t.stageTitle;
+      document.getElementById('miniBody').textContent = t.miniBody;
+      document.getElementById('langBtn').textContent = t.langBtn;
+      document.getElementById('themeBtn').textContent = t.themeBtn();
+      document.getElementById('quoteText').textContent = t.quotes[qIdx % t.quotes.length];
+
+      const onCount = mods.filter(m => m.on).length;
+      document.getElementById('activeBadge').textContent = t.activeTxt(onCount);
+
+      const sorted = [...mods].sort((a, b) => Number(b.fav) - Number(a.fav));
+      document.getElementById('grid').innerHTML = sorted.map(m => `
+        <article class="card ${m.on ? 'is-on' : ''}">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">
+            <div>
+              <div style="font-size:15px; font-weight:700;">${m[lang].title}</div>
+              <div style="font-size:11.5px; color:var(--muted); margin-top:2px;">${m.on ? t.onTxt : t.offTxt}</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <button class="star-btn ${m.fav ? 'fav' : ''}" onclick="toggleFav('${m.id}')" title="Favorite">⭐</button>
+              <button class="pwr ${m.on ? 'on' : ''}" onclick="toggleMod('${m.id}')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line></svg>
+              </button>
+            </div>
+          </div>
+          <p style="font-size:12.5px; color:var(--muted); line-height:1.55;">${m[lang].desc}</p>
+          ${m.hasSlider ? `
+            <div style="display:flex; align-items:center; gap:10px; padding-top:4px;">
+              <input type="range" min="50" max="100" value="${opacityVal}" style="flex:1; accent-color:var(--primary);" oninput="opacityVal=this.value; render()" />
+              <span style="font-size:12px; font-weight:700;">${opacityVal}%</span>
+            </div>` : ''}
+        </article>
+      `).join('');
+
+      const isDark = mods.find(m => m.id === 'dark')?.on;
+      const isMica = mods.find(m => m.id === 'mica')?.on;
+      const isDock = mods.find(m => m.id === 'dock')?.on;
+      const isOpacity = mods.find(m => m.id === 'opacity')?.on;
+      const win = document.getElementById('miniWin');
+      win.className = 'mini-win' + (isDark ? ' dark' : '') + (isMica ? ' mica' : '');
+      win.style.opacity = isOpacity ? (opacityVal / 100) : 1;
+      document.getElementById('miniTb').className = 'mini-tb' + (isDock ? ' dock' : '');
+    }
+
+    render();
+  </script>
+</body>
+</html>

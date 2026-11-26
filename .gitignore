@@ -1,0 +1,8 @@
+node_modules/
+dist/
+release/
+mods_compiled/
+config/last_error.log
+config/*.ps1
+*.log
+.DS_Store
