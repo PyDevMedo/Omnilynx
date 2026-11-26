@@ -478,15 +478,51 @@ app.whenReady().then(() => {
     return { ok: true, id: safeId, filePath };
   });
 
-  ipcMain.handle('mods:delete', async (_, modId) => {
+  ipcMain.handle('mods:delete', async (_, payload) => {
+    const modId = typeof payload === 'string' ? payload : payload.id;
+    const origin = typeof payload === 'object' ? payload.origin : 'wendo';
+
     const filePath = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
     const dllPath = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     if (fs.existsSync(dllPath)) fs.unlinkSync(dllPath);
+
+    if (origin === 'windhawk') {
+      const whSrc = path.join(WINDHAWK_MODS_DIR, `${modId}.wh.cpp`);
+      const regPath = `HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\${modId}`;
+      const psScript = `
+$ErrorActionPreference = 'SilentlyContinue'
+if (Test-Path '${regPath}') { Remove-Item -Path '${regPath}' -Recurse -Force }
+if (Test-Path '${whSrc}') { Remove-Item -Path '${whSrc}' -Force }
+$profilePath = '${WINDHAWK_PROFILE_FILE}'
+if (Test-Path $profilePath) {
+  $json = Get-Content $profilePath -Raw | ConvertFrom-Json
+  if ($json.mods -and $json.mods.PSObject.Properties['${modId}']) {
+    $json.mods.PSObject.Properties.Remove('${modId}')
+    $json | ConvertTo-Json -Depth 10 | Set-Content $profilePath -Encoding UTF8
+  }
+}
+`;
+      const scriptFile = path.join(CONFIG_DIR, 'delete_wh_mod.ps1');
+      fs.writeFileSync(scriptFile, psScript, 'utf8');
+      let res = await runExecFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile]);
+      if (!res.ok || fs.existsSync(whSrc)) {
+        await runExecFile('powershell.exe', [
+          '-NoProfile',
+          '-Command',
+          `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptFile}'`
+        ]);
+      }
+      const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
+      if (fs.existsSync(whExe)) {
+        execFile(whExe, ['-restart', '-tray-only'], { windowsHide: true }, () => {});
+      }
+    }
+
     const state = readJsonSafe(STATE_FILE, { mods: {} });
     delete state.mods[modId];
     writeJsonSafe(STATE_FILE, state);
-    return { ok: true };
+    return { ok: true, id: modId };
   });
 
   // Real Toggle: compiles + injects Wendo mods, or updates Windhawk registry for Windhawk mods

@@ -411,13 +411,11 @@ export default function ModDetailsModal({
 
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
                 <button className="btn" onClick={() => onDuplicate(mod.id)}>
-                  <Copy size={14} /> Duplicate to Editable Mod
+                  <Copy size={14} /> {lang === 'ar' ? 'نسخ للتعديل' : 'Duplicate to Editable Mod'}
                 </button>
-                {mod.origin === 'wendo' && (
-                  <button className="btn btn-danger" onClick={() => onDelete(mod.id)}>
-                    <Trash2 size={14} /> Delete Mod
-                  </button>
-                )}
+                <button className="btn btn-danger" onClick={() => onDelete(mod.id, mod.origin)}>
+                  <Trash2 size={14} /> {lang === 'ar' ? 'حذف المود' : 'Delete Mod'}
+                </button>
               </div>
             </div>
           )}

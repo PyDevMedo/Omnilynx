@@ -21,7 +21,8 @@ import {
   Eye,
   Power,
   Share2,
-  Link2
+  Link2,
+  Trash2
 } from 'lucide-react';
 import omnilynxLogo from './assets/omnilynx-logo.png';
 import { parseModSource, createNewModTemplate } from './utils/modParser';
@@ -392,6 +393,18 @@ export default function App() {
     }
   };
 
+  const handleDeleteMod = async (modId, origin) => {
+    const msg =
+      lang === 'ar'
+        ? `هل أنت متأكد من حذف المود "${modId}" نهائياً؟`
+        : `Are you sure you want to delete "${modId}"?`;
+    if (!window.confirm(msg)) return;
+    await window.wendoAPI.deleteMod({ id: modId, origin });
+    setSelectedMod(null);
+    await loadInstalled();
+    showToast(lang === 'ar' ? `🗑️ تم حذف المود: ${modId}` : `🗑️ Deleted ${modId}`);
+  };
+
   const handleDrop = async (e) => {
     e.preventDefault();
     setDragOver(false);
@@ -644,6 +657,9 @@ export default function App() {
                       <button className="btn" onClick={() => setEditorState({ id: mod.id, code: mod.code })} title="Edit Source">
                         <Code2 size={14} />
                       </button>
+                      <button className="btn btn-danger" onClick={() => handleDeleteMod(mod.id, mod.origin)} title={lang === 'ar' ? 'حذف المود' : 'Delete Mod'}>
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </article>
                   );
@@ -814,7 +830,7 @@ export default function App() {
             return res;
           }}
           onEditCode={(m) => { setSelectedMod(null); setEditorState({ id: m.id, code: m.code }); }}
-          onDelete={async (id) => { await window.wendoAPI.deleteMod(id); setSelectedMod(null); await loadInstalled(); showToast(`Deleted ${id}`); }}
+          onDelete={(id, origin) => handleDeleteMod(id, origin)}
           onSwap={handleSwapMod}
           onDuplicate={handleDuplicateMod}
           onShare={handleShareMod}
