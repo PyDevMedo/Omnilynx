@@ -59,14 +59,11 @@ code, pre, .font-mono {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 145px 0 18px;
+  direction: ltr;
+  padding: 0 150px 0 18px;
   border-bottom: 1px solid var(--border-subtle);
   background: rgba(6, 9, 17, 0.88);
   backdrop-filter: blur(18px);
-}
-
-html[dir="rtl"] .titlebar {
-  padding: 0 18px 0 145px;
 }
 
 .main-layout {
