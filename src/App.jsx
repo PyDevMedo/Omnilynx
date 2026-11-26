@@ -45,7 +45,6 @@ const I18N = {
     navMods: '🧩 المودات المثبتة',
     navTweaks: '⚡ تعديلات الويندوز',
     navStore: '🛒 متجر المودات',
-    navProcs: '🎛️ مراقب العمليات',
     navSettings: '⚙️ الإعدادات',
     newMod: '✨ + مود جديد',
     importMod: '📥 استيراد .wh.cpp',
@@ -69,9 +68,6 @@ const I18N = {
     previewBtn: '👁️ معاينة',
     installBtn: '⬇️ تثبيت',
     reinstallBtn: '✅ تحديث',
-    procTitle: '🎛️ مراقب العمليات',
-    procSub: 'العمليات الجارية عبر محرك Omnilynx الأصلي.',
-    procSearch: '🔍 ابحث بالاسم أو PID...',
     settingsTitle: '⚙️ إعدادات Omnilynx',
     quotes: [
       { text: '«البساطة هي قمة الاحترافية؛ اجعل أدواتك تعمل في صمت وتمنحك تجربة بصرية مريحة.» ✨', author: '— فلسفة Omnilynx' },
@@ -97,7 +93,6 @@ const I18N = {
     navMods: '🧩 Installed Mods',
     navTweaks: '⚡ Windows Tweaks',
     navStore: '🛒 Explore Store',
-    navProcs: '🎛️ Process Monitor',
     navSettings: '⚙️ Settings',
     newMod: '✨ + New Mod',
     importMod: '📥 Import .wh.cpp',
@@ -121,9 +116,6 @@ const I18N = {
     previewBtn: '👁️ Preview',
     installBtn: '⬇️ Install',
     reinstallBtn: '✅ Update',
-    procTitle: '🎛️ Process Monitor',
-    procSub: 'Live Windows processes enumerated by Omnilynx native engine.',
-    procSearch: '🔍 Filter by name or PID...',
     settingsTitle: '⚙️ Omnilynx Settings',
     quotes: [
       { text: '“Simplicity is the ultimate sophistication; great tools work silently and feel effortless.” ✨', author: '— Omnilynx Philosophy' },
@@ -164,9 +156,6 @@ export default function App() {
   const [shareLinkInput, setShareLinkInput] = useState('');
   const [storeMetaCache, setStoreMetaCache] = useState({});
 
-  const [processes, setProcesses] = useState([]);
-  const [procSearch, setProcSearch] = useState('');
-  const [procFilter, setProcFilter] = useState('all');
   const [tweaks, setTweaks] = useState({});
 
   const [toast, setToast] = useState('');
@@ -213,18 +202,12 @@ export default function App() {
     setStoreLoading(false);
   };
 
-  const loadProcesses = async () => {
-    const res = await window.wendoAPI.listProcesses();
-    if (res.ok) setProcesses(res.processes || []);
-  };
-
   const loadTweaks = async () => {
     setTweaks((await window.wendoAPI.getTweaks()) || {});
   };
 
   useEffect(() => {
     if (page === 'explore' && storeMods.length === 0) loadStore();
-    if (page === 'processes') loadProcesses();
     if (page === 'tweaks') loadTweaks();
   }, [page]);
 
@@ -286,22 +269,6 @@ export default function App() {
       cancelled = true;
     };
   }, [page, filteredStore]);
-
-  const filteredProcesses = useMemo(() => {
-    const q = procSearch.toLowerCase();
-    return processes.filter((p) => {
-      const name = (p.name || '').toLowerCase();
-      const matchSearch = !q || name.includes(q) || String(p.pid).includes(q);
-      if (!matchSearch) return false;
-      if (procFilter === 'shell') {
-        return ['explorer.exe', 'dwm.exe', 'shellexperiencehost.exe', 'startmenuexperiencehost.exe', 'searchhost.exe', 'taskmgr.exe'].includes(name);
-      }
-      if (procFilter === 'apps') {
-        return ['notepad.exe', 'chrome.exe', 'msedge.exe', 'brave.exe', 'firefox.exe', 'code.exe', 'discord.exe', 'spotify.exe', 'electron.exe'].includes(name);
-      }
-      return true;
-    });
-  }, [processes, procSearch, procFilter]);
 
   const handleToggleMod = async (mod) => {
     setErrorBanner('');
@@ -516,9 +483,6 @@ export default function App() {
           </button>
           <button className={`nav-item ${page === 'explore' ? 'active' : ''}`} onClick={() => setPage('explore')}>
             <span>{t.navStore}</span>
-          </button>
-          <button className={`nav-item ${page === 'processes' ? 'active' : ''}`} onClick={() => setPage('processes')}>
-            <span>{t.navProcs}</span>
           </button>
           <button className={`nav-item ${page === 'settings' ? 'active' : ''}`} onClick={() => setPage('settings')}>
             <span>{t.navSettings}</span>
@@ -803,103 +767,6 @@ export default function App() {
                   })}
                 </div>
               )}
-            </div>
-          )}
-
-          {page === 'processes' && (
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 14, flexWrap: 'wrap' }}>
-                <div>
-                  <h1 style={{ fontSize: 21, fontWeight: 800 }}>{t.procTitle}</h1>
-                  <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 3 }}>{t.procSub}</p>
-                </div>
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <input className="input" style={{ width: 240 }} placeholder={t.procSearch} value={procSearch} onChange={(e) => setProcSearch(e.target.value)} />
-                  <button className="btn" onClick={loadProcesses}><RefreshCw size={14} /></button>
-                </div>
-              </div>
-
-              {/* Process Stats & Filter Chips */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {[
-                    { id: 'all', label: lang === 'ar' ? 'الكل' : 'All' },
-                    { id: 'shell', label: lang === 'ar' ? '🪟 واجهة النظام (Shell)' : '🪟 Windows Shell' },
-                    { id: 'apps', label: lang === 'ar' ? '🚀 التطبيقات الشائعة' : '🚀 Common Apps' }
-                  ].map((f) => (
-                    <button
-                      key={f.id}
-                      className={`btn ${procFilter === f.id ? 'btn-primary' : ''}`}
-                      style={{ borderRadius: 99, padding: '6px 14px', fontSize: 12 }}
-                      onClick={() => setProcFilter(f.id)}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <span className="badge badge-indigo">
-                    {lang === 'ar' ? `الإجمالي: ${processes.length}` : `Total: ${processes.length}`}
-                  </span>
-                  <span className="badge badge-emerald">
-                    {lang === 'ar' ? `المعروض: ${filteredProcesses.length}` : `Showing: ${filteredProcesses.length}`}
-                  </span>
-                </div>
-              </div>
-
-              {/* Modern Process Cards Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 12 }}>
-                {filteredProcesses.slice(0, 72).map((p) => {
-                  const lower = (p.name || '').toLowerCase();
-                  const isShell = ['explorer.exe', 'dwm.exe', 'shellexperiencehost.exe', 'startmenuexperiencehost.exe'].includes(lower);
-                  const isBrowser = ['chrome.exe', 'msedge.exe', 'brave.exe', 'firefox.exe'].includes(lower);
-                  const icon = isShell ? '🪟' : isBrowser ? '🌐' : '⚙️';
-                  return (
-                    <div
-                      key={`${p.pid}-${p.name}`}
-                      className="glass-card"
-                      style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-                        <div
-                          style={{
-                            width: 34,
-                            height: 34,
-                            borderRadius: 10,
-                            background: isShell ? 'rgba(99, 102, 241, 0.16)' : 'rgba(255, 255, 255, 0.05)',
-                            border: '1px solid var(--border-subtle)',
-                            display: 'grid',
-                            placeItems: 'center',
-                            fontSize: 16,
-                            flexShrink: 0
-                          }}
-                        >
-                          {icon}
-                        </div>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {p.name}
-                          </div>
-                          <div className="font-mono" style={{ fontSize: 11.5, color: '#a5b4fc', marginTop: 2 }}>
-                            PID {p.pid}
-                          </div>
-                        </div>
-                      </div>
-                      <button
-                        className="btn"
-                        style={{ padding: '5px 9px', fontSize: 11.5 }}
-                        onClick={() => {
-                          navigator.clipboard?.writeText(String(p.pid));
-                          showToast(lang === 'ar' ? `📋 تم نسخ PID: ${p.pid}` : `📋 Copied PID ${p.pid}`);
-                        }}
-                        title="Copy PID"
-                      >
-                        PID
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
             </div>
           )}
 
