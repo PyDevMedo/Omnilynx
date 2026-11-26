@@ -10,7 +10,7 @@ const ENGINE_BIN = path.join(ROOT_DIR, 'engine', 'bin', 'wendo_injector.exe');
 const ENGINE_INCLUDE = path.join(ROOT_DIR, 'engine', 'include');
 
 // Cleanly separated workspace folders
-const MODS_SOURCE_DIR = path.join(ROOT_DIR, 'mods');
+const MODS_SOURCE_DIR = path.join(ROOT_DIR, 'installed_mods');
 const MODS_COMPILED_DIR = path.join(ROOT_DIR, 'mods_compiled');
 const CONFIG_DIR = path.join(ROOT_DIR, 'config');
 const STATE_FILE = path.join(CONFIG_DIR, 'state.json');

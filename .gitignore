@@ -1,6 +1,7 @@
 node_modules/
 dist/
 release/
+installed_mods/
 mods_compiled/
 config/last_error.log
 config/*.ps1
