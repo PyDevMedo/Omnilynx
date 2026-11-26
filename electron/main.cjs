@@ -248,6 +248,17 @@ async function writeWindhawkModSettings(modId, settingsObj) {
     }
   }
 
+  // If the mod is currently enabled (Disabled == 0), cycle Disabled 1 -> 0 so Windhawk's service reloads the new settings immediately
+  const modKeyPath = `HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\${modId}`;
+  lines.push(`if (Test-Path '${modKeyPath}') {`);
+  lines.push(`  $curDisabled = (Get-ItemProperty -Path '${modKeyPath}' -Name 'Disabled' -ErrorAction SilentlyContinue).Disabled`);
+  lines.push(`  if ($curDisabled -eq 0) {`);
+  lines.push(`    Set-ItemProperty -Path '${modKeyPath}' -Name 'Disabled' -Value 1 -Type DWord`);
+  lines.push(`    Start-Sleep -Milliseconds 200`);
+  lines.push(`    Set-ItemProperty -Path '${modKeyPath}' -Name 'Disabled' -Value 0 -Type DWord`);
+  lines.push(`  }`);
+  lines.push(`}`);
+
   const scriptFile = path.join(CONFIG_DIR, 'save_wh_settings.ps1');
   fs.writeFileSync(scriptFile, lines.join('\r\n'), 'utf8');
 
