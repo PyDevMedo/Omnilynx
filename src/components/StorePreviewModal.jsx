@@ -38,10 +38,10 @@ export default function StorePreviewModal({ item, isInstalled, installing, onClo
 
   const parsed = useMemo(() => parseModSource(code, item.id), [code, item.id]);
   const readmeHtml = useMemo(() => {
-    const cleanReadme = (parsed.readme || '*No README provided for this mod.*').replace(
-      /windhawk/gi,
-      'Omnilynx'
-    );
+    const cleanReadme = (parsed.readme || '*No README provided for this mod.*')
+      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+      .replace(/<img[^>]*>/gi, '')
+      .replace(/windhawk/gi, 'Omnilynx');
     return marked.parse(cleanReadme);
   }, [parsed.readme]);
 

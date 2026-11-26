@@ -41,7 +41,11 @@ export default function ModDetailsModal({
   const [busy, setBusy] = useState(false);
 
   const readmeHtml = useMemo(() => {
-    return marked.parse(mod.parsed.readme || '*No README provided for this mod.*');
+    const clean = (mod.parsed.readme || '*No README provided for this mod.*')
+      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+      .replace(/<img[^>]*>/gi, '')
+      .replace(/windhawk/gi, 'Omnilynx');
+    return marked.parse(clean);
   }, [mod.parsed.readme]);
 
   const handleSave = async () => {
