@@ -5,6 +5,7 @@ import { cpp } from '@codemirror/lang-cpp';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { X, Download, CheckCircle2, FileText, Sliders, Code2, ExternalLink } from 'lucide-react';
 import { parseModSource } from '../utils/modParser';
+import omnilynxLogo from '../assets/omnilynx-logo.png';
 
 export default function StorePreviewModal({ item, isInstalled, installing, onClose, onInstall }) {
   const [tab, setTab] = useState('readme');
@@ -36,10 +37,13 @@ export default function StorePreviewModal({ item, isInstalled, installing, onClo
   }, [item.downloadUrl]);
 
   const parsed = useMemo(() => parseModSource(code, item.id), [code, item.id]);
-  const readmeHtml = useMemo(
-    () => marked.parse(parsed.readme || '*No README provided for this mod.*'),
-    [parsed.readme]
-  );
+  const readmeHtml = useMemo(() => {
+    const cleanReadme = (parsed.readme || '*No README provided for this mod.*').replace(
+      /windhawk/gi,
+      'Omnilynx'
+    );
+    return marked.parse(cleanReadme);
+  }, [parsed.readme]);
 
   return (
     <div
@@ -78,19 +82,26 @@ export default function StorePreviewModal({ item, isInstalled, installing, onClo
             gap: 12
           }}
         >
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <h2 style={{ fontSize: 18, fontWeight: 600 }}>
-                {loading ? item.id : parsed.meta.name}
-              </h2>
-              {!loading && <span className="badge badge-indigo">v{parsed.meta.version}</span>}
-              {!loading && <span className="badge badge-slate">{parsed.category}</span>}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+            <img
+              src={omnilynxLogo}
+              alt="Omnilynx"
+              style={{ width: 32, height: 32, objectFit: 'contain', flexShrink: 0 }}
+            />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <h2 style={{ fontSize: 18, fontWeight: 600 }}>
+                  {loading ? item.id : parsed.meta.name}
+                </h2>
+                {!loading && <span className="badge badge-indigo">v{parsed.meta.version}</span>}
+                {!loading && <span className="badge badge-slate">{parsed.category}</span>}
+              </div>
+              <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 4 }}>
+                {loading
+                  ? `Loading preview for ${item.fileName}...`
+                  : `by ${parsed.meta.author} · ${(item.size / 1024).toFixed(1)} KB`}
+              </p>
             </div>
-            <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 4 }}>
-              {loading
-                ? `Loading preview for ${item.fileName}...`
-                : `by ${parsed.meta.author} · ${(item.size / 1024).toFixed(1)} KB`}
-            </p>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

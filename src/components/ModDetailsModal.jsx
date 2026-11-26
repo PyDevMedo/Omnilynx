@@ -13,6 +13,7 @@ import {
   ArrowLeftRight,
   Copy
 } from 'lucide-react';
+import omnilynxLogo from '../assets/omnilynx-logo.png';
 
 export default function ModDetailsModal({
   mod,
@@ -181,15 +182,22 @@ export default function ModDetailsModal({
             justifyContent: 'space-between'
           }}
         >
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <h2 style={{ fontSize: 18, fontWeight: 600 }}>{mod.parsed.meta.name}</h2>
-              <span className="badge badge-indigo">v{mod.parsed.meta.version}</span>
-              <span className="badge badge-slate">{mod.origin}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <img
+              src={omnilynxLogo}
+              alt="Omnilynx"
+              style={{ width: 32, height: 32, objectFit: 'contain', flexShrink: 0 }}
+            />
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <h2 style={{ fontSize: 18, fontWeight: 600 }}>{mod.parsed.meta.name}</h2>
+                <span className="badge badge-indigo">v{mod.parsed.meta.version}</span>
+                <span className="badge badge-slate">{mod.origin === 'windhawk' ? 'Omnilynx Engine' : mod.origin}</span>
+              </div>
+              <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 4 }}>
+                by {mod.parsed.meta.author} · ID: <code>{mod.id}</code>
+              </p>
             </div>
-            <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 4 }}>
-              by {mod.parsed.meta.author} · ID: <code>{mod.id}</code>
-            </p>
           </div>
           <button className="btn" onClick={onClose} style={{ padding: 8 }}>
             <X size={16} />
