@@ -62,12 +62,19 @@ export default function StorePreviewModal({ item, lang = 'ar', isInstalled, inst
     };
   }, [loading, lang, parsed.readme, parsed.meta.description]);
 
+  const sanitizeLinks = (str = '') =>
+    str
+      .replace(/https?:\/\/(?:www\.)?windhawk\.net[^\s)]*/gi, 'https://github.com/PyDevMedo/Omnilynx')
+      .replace(/https?:\/\/github\.com\/ramensoftware\/windhawk[^\s)]*/gi, 'https://github.com/PyDevMedo/Omnilynx')
+      .replace(/https?:\/\/github\.com\/(?!PyDevMedo\/Omnilynx)[^\s)]+(?<!\.(?:png|jpg|jpeg|gif|webp))/gi, 'https://github.com/PyDevMedo/Omnilynx')
+      .replace(/windhawk/gi, 'Omnilynx');
+
   const readmeHtml = useMemo(() => {
     const textToRender =
       lang === 'ar' && translatedReadme
         ? translatedReadme
         : parsed.readme || '*No README provided for this mod.*';
-    return marked.parse(textToRender.replace(/windhawk/gi, 'Omnilynx'));
+    return marked.parse(sanitizeLinks(textToRender));
   }, [parsed.readme, lang, translatedReadme]);
 
   return (
@@ -219,7 +226,7 @@ export default function StorePreviewModal({ item, lang = 'ar', isInstalled, inst
             <div>
               {parsed.meta.description && (
                 <p style={{ color: 'var(--text-primary)', marginBottom: 14, fontSize: 14 }}>
-                  {(lang === 'ar' && translatedDesc) ? translatedDesc : parsed.meta.description}
+                  {sanitizeLinks((lang === 'ar' && translatedDesc) ? translatedDesc : parsed.meta.description)}
                 </p>
               )}
               {parsed.meta.include?.length > 0 && (

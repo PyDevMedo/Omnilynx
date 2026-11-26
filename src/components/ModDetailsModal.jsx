@@ -67,12 +67,19 @@ export default function ModDetailsModal({
   const [statusMsg, setStatusMsg] = useState('');
   const [busy, setBusy] = useState(false);
 
+  const sanitizeLinks = (str = '') =>
+    str
+      .replace(/https?:\/\/(?:www\.)?windhawk\.net[^\s)]*/gi, 'https://github.com/PyDevMedo/Omnilynx')
+      .replace(/https?:\/\/github\.com\/ramensoftware\/windhawk[^\s)]*/gi, 'https://github.com/PyDevMedo/Omnilynx')
+      .replace(/https?:\/\/github\.com\/(?!PyDevMedo\/Omnilynx)[^\s)]+(?<!\.(?:png|jpg|jpeg|gif|webp))/gi, 'https://github.com/PyDevMedo/Omnilynx')
+      .replace(/windhawk/gi, 'Omnilynx');
+
   const readmeHtml = useMemo(() => {
     const textToRender =
       lang === 'ar' && translatedReadme
         ? translatedReadme
         : mod.parsed.readme || '*No README provided for this mod.*';
-    return marked.parse(textToRender.replace(/windhawk/gi, 'Omnilynx'));
+    return marked.parse(sanitizeLinks(textToRender));
   }, [mod.parsed.readme, lang, translatedReadme]);
 
   const handleSave = async () => {
@@ -324,7 +331,7 @@ export default function ModDetailsModal({
           {tab === 'details' && (
             <div>
               <p style={{ color: 'var(--text-primary)', marginBottom: 14, fontSize: 14 }}>
-                {(lang === 'ar' && translatedDesc) ? translatedDesc : mod.parsed.meta.description}
+                {sanitizeLinks((lang === 'ar' && translatedDesc) ? translatedDesc : mod.parsed.meta.description)}
               </p>
               {mod.parsed.meta.include?.length > 0 && (
                 <div style={{ marginBottom: 16, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
