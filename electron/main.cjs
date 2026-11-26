@@ -566,34 +566,41 @@ app.whenReady().then(() => {
     }
     fs.writeFileSync(SETTINGS_INI, lines.join('\r\n'), 'utf8');
 
-    // If Windhawk mod, write to HKLM\SOFTWARE\Windhawk\Engine\Mods\<id>\Settings
+    // If Windhawk mod, write to HKLM\SOFTWARE\Windhawk\Engine\Mods\<id>\Settings and force live reload
     if (origin === 'windhawk' || isWindhawkOnlyMod(code || '')) {
       const res = await writeWindhawkModSettings(id, settings);
       const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
       if (res.ok && fs.existsSync(whExe)) {
-        await runExecFile(whExe, ['-restart', '-tray-only']);
+        // If mod is currently enabled, restart Windhawk silently so new settings apply immediately
+        execFile(whExe, ['-restart', '-tray-only'], { windowsHide: true }, () => {});
       }
       return {
         ok: res.ok,
         message: res.ok
-          ? 'Settings saved to Windhawk & reloaded!'
+          ? 'Settings saved & applied immediately!'
           : `Failed to save Windhawk settings: ${res.stderr}`
       };
     }
 
-    // If Wendo standalone mod is enabled, eject & re-inject so new settings apply immediately
+    // If Omnilynx standalone mod is enabled, compile if needed, then eject -> wait 150ms -> re-inject
     if (state.mods[id]?.enabled) {
       const dllPath = path.join(MODS_COMPILED_DIR, `${id}.dll`);
+      if (!fs.existsSync(dllPath) && code) {
+        await compileModInternal(id, code, '');
+      }
       const targets = extractTargetsFromCode(code || '');
       if (fs.existsSync(dllPath)) {
         for (const target of targets) {
           await runExecFile(ENGINE_BIN, ['eject', target, `${id}.dll`]);
+        }
+        await new Promise((r) => setTimeout(r, 150));
+        for (const target of targets) {
           await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
         }
       }
     }
 
-    return { ok: true, message: 'Settings saved & applied!' };
+    return { ok: true, message: 'Settings saved & applied immediately!' };
   });
 
   ipcMain.handle('mods:importFile', async () => {
