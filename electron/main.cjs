@@ -194,6 +194,9 @@ async function compileAndRegisterWindhawkMod(modId, code) {
     `-DWH_MOD_VERSION=L"${version}"`,
     '-DUNICODE',
     '-D_UNICODE',
+    '-D_WIN32_WINNT=0x0A00',
+    '-DWINVER=0x0A00',
+    '-DNTDDI_VERSION=0x0A00000B',
     '-include',
     'windhawk_api.h',
     srcPath,
@@ -204,6 +207,12 @@ async function compileAndRegisterWindhawkMod(modId, code) {
     '-lgdi32',
     '-lshell32',
     '-lversion',
+    '-lshcore',
+    '-ldwmapi',
+    '-lole32',
+    '-loleaut32',
+    '-lruntimeobject',
+    '-ladvapi32',
     ...extraFlags
   ];
 
