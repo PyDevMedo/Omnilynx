@@ -392,11 +392,29 @@ function createWindow() {
 app.whenReady().then(() => {
   ensureDirs();
 
-  // IPC: List installed mods (Windhawk + Wendo mods/)
+  // IPC: List installed mods (Windhawk + Omnilynx installed_mods/)
   ipcMain.handle('mods:listInstalled', async () => {
     const state = readJsonSafe(STATE_FILE, { mods: {} });
     const whProfile = readJsonSafe(WINDHAWK_PROFILE_FILE, { mods: {} });
     const modsMap = new Map();
+
+    // Fast batch read of Windhawk registry Disabled states
+    const regDisabledMap = {};
+    try {
+      const regRes = await runExecFile('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        "Get-ItemProperty 'HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\*' -ErrorAction SilentlyContinue | ForEach-Object { \"$($_.PSChildName)=$($_.Disabled)\" }"
+      ]);
+      if (regRes.ok && regRes.stdout) {
+        for (const line of regRes.stdout.split(/\r?\n/)) {
+          const [k, v] = line.trim().split('=');
+          if (k) regDisabledMap[k] = v === '1';
+        }
+      }
+    } catch {
+      // ignore if registry unavailable
+    }
 
     const scanDir = (dir, sourceOrigin) => {
       if (!fs.existsSync(dir)) return;
@@ -409,10 +427,18 @@ app.whenReady().then(() => {
         const localState = state.mods[modId] || {};
         const whState = whProfile.mods?.[modId] || {};
 
-        const isEnabled =
-          sourceOrigin === 'windhawk'
-            ? whState.disabled === false
-            : Boolean(localState.enabled);
+        let isEnabled = false;
+        if (sourceOrigin === 'windhawk') {
+          if (modId in regDisabledMap) {
+            isEnabled = !regDisabledMap[modId];
+          } else if (typeof localState.enabled === 'boolean') {
+            isEnabled = localState.enabled;
+          } else {
+            isEnabled = whState.disabled === false;
+          }
+        } else {
+          isEnabled = Boolean(localState.enabled);
+        }
 
         modsMap.set(modId, {
           id: modId,
@@ -457,22 +483,23 @@ app.whenReady().then(() => {
     const state = readJsonSafe(STATE_FILE, { mods: {} });
 
     if (origin === 'windhawk' || isWindhawkOnlyMod(code)) {
-      const res = await setWindhawkModDisabled(id, !enabled);
       state.mods[id] = { ...(state.mods[id] || {}), enabled };
       writeJsonSafe(STATE_FILE, state);
 
-      // Restart Windhawk tray silently so the change takes effect immediately
+      const res = await setWindhawkModDisabled(id, !enabled);
+
+      // Reload Windhawk tray asynchronously so UI stays snappy
       const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
       if (res.ok && fs.existsSync(whExe)) {
-        runExecFile(whExe, ['-restart', '-tray-only']);
+        execFile(whExe, ['-restart', '-tray-only'], { windowsHide: true }, () => {});
       }
 
       return {
         ok: res.ok,
-        enabled,
+        enabled: res.ok ? enabled : !enabled,
         message: res.ok
-          ? `Mod ${id} ${enabled ? 'enabled' : 'disabled'} & Windhawk Engine reloaded.`
-          : `Could not update Windhawk registry (Admin permission needed): ${res.stderr}`
+          ? `Mod ${id} ${enabled ? 'enabled' : 'disabled'}!`
+          : `Admin permission required to toggle ${id}: ${res.stderr}`
       };
     }
 

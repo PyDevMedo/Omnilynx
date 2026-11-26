@@ -162,6 +162,7 @@ export default function App() {
   const [storeSearch, setStoreSearch] = useState('');
   const [installingId, setInstallingId] = useState(null);
   const [shareLinkInput, setShareLinkInput] = useState('');
+  const [storeMetaCache, setStoreMetaCache] = useState({});
 
   const [processes, setProcesses] = useState([]);
   const [procSearch, setProcSearch] = useState('');
@@ -248,6 +249,43 @@ export default function App() {
     return storeMods.filter((m) => !q || m.id.toLowerCase().includes(q));
   }, [storeMods, storeSearch]);
 
+  // Lazy-fetch metadata & thumbnail images for the visible Store cards
+  useEffect(() => {
+    if (page !== 'explore' || filteredStore.length === 0) return;
+    let cancelled = false;
+    const visible = filteredStore.slice(0, 18).filter((item) => !storeMetaCache[item.id]);
+    if (visible.length === 0) return;
+
+    (async () => {
+      for (const item of visible) {
+        if (cancelled) break;
+        try {
+          const code = await window.wendoAPI.fetchStoreModSource({ downloadUrl: item.downloadUrl });
+          if (cancelled) break;
+          const parsed = parseModSource(code, item.id);
+          const imgMatch = (parsed.readme || '').match(/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/);
+          setStoreMetaCache((prev) => ({
+            ...prev,
+            [item.id]: {
+              name: parsed.meta.name || item.id,
+              desc: parsed.meta.description || '',
+              version: parsed.meta.version || '1.0.0',
+              author: parsed.meta.author || 'Omnilynx',
+              category: parsed.category,
+              previewImg: imgMatch ? imgMatch[1] : null
+            }
+          }));
+        } catch {
+          // ignore individual fetch failures
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [page, filteredStore]);
+
   const filteredProcesses = useMemo(() => {
     const q = procSearch.toLowerCase();
     return processes.filter((p) => !q || p.name.toLowerCase().includes(q) || String(p.pid).includes(q));
@@ -256,6 +294,9 @@ export default function App() {
   const handleToggleMod = async (mod) => {
     setErrorBanner('');
     const next = !mod.enabled;
+    // Optimistic UI update for instant feedback
+    setMods((prev) => prev.map((m) => (m.id === mod.id ? { ...m, enabled: next } : m)));
+
     const res = await window.wendoAPI.toggleMod({
       id: mod.id,
       enabled: next,
@@ -263,7 +304,10 @@ export default function App() {
       code: mod.code,
       compilerOptions: mod.parsed.meta.compilerOptions
     });
-    await loadInstalled();
+    if (res.ok === false) {
+      // Revert if failed
+      setMods((prev) => prev.map((m) => (m.id === mod.id ? { ...m, enabled: !next } : m)));
+    }
     showToast(res.message || `${mod.parsed.meta.name} ${next ? 'enabled' : 'disabled'}`, res.ok === false);
   };
 
@@ -701,16 +745,38 @@ export default function App() {
                 <p style={{ color: 'var(--text-secondary)' }}>Loading from GitHub...</p>
               ) : (
                 <div className="mod-grid">
-                  {filteredStore.map((item) => {
+                  {filteredStore.slice(0, 60).map((item) => {
                     const isInstalled = installedIds.has(item.id);
+                    const meta = storeMetaCache[item.id];
                     return (
                       <article key={item.id} className="glass-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        <div style={{ fontSize: 14.5, fontWeight: 700 }}>{item.id}</div>
-                        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                          {item.fileName} · {(item.size / 1024).toFixed(1)} KB
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                          <div>
+                            <div style={{ fontSize: 14.5, fontWeight: 700 }}>{meta?.name || item.id}</div>
+                            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
+                              {meta ? `v${meta.version} · ${meta.author}` : `${item.fileName} · ${(item.size / 1024).toFixed(1)} KB`}
+                            </div>
+                          </div>
+                          {meta?.category && <span className="badge badge-indigo">{meta.category}</span>}
                         </div>
-                        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+
+                        {meta?.previewImg && (
+                          <div style={{ height: 110, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border-subtle)', background: '#0b0e14' }}>
+                            <img src={meta.previewImg} alt={meta.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          </div>
+                        )}
+
+                        {meta?.desc && (
+                          <p style={{ fontSize: 12.2, color: 'var(--text-secondary)', lineHeight: 1.5, flex: 1 }}>
+                            {meta.desc}
+                          </p>
+                        )}
+
+                        <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 6 }}>
                           <button className="btn" onClick={() => setPreviewStoreItem(item)}>{t.previewBtn}</button>
+                          <button className="btn" onClick={() => handleShareMod(item.id)} title={lang === 'ar' ? 'مشاركة' : 'Share'}>
+                            <Share2 size={14} />
+                          </button>
                           <button
                             className={`btn ${isInstalled ? 'btn-success' : 'btn-primary'}`}
                             style={{ flex: 1 }}

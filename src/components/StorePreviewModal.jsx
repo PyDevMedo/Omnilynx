@@ -229,6 +229,34 @@ export default function StorePreviewModal({ item, lang = 'ar', isInstalled, inst
                   {sanitizeLinks((lang === 'ar' && translatedDesc) ? translatedDesc : parsed.meta.description)}
                 </p>
               )}
+              <div
+                style={{
+                  marginBottom: 14,
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  background: 'rgba(99, 102, 241, 0.08)',
+                  border: '1px solid rgba(99, 102, 241, 0.25)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  flexWrap: 'wrap'
+                }}
+              >
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 11.5, color: '#a5b4fc', fontWeight: 700, marginBottom: 3 }}>
+                    {lang === 'ar' ? '🔗 رابط مشاركة المود:' : '🔗 Mod Share Link:'}
+                  </div>
+                  <code className="font-mono" style={{ fontSize: 11.5, wordBreak: 'break-all', userSelect: 'text' }}>
+                    {`omnilynx://install?mod=${encodeURIComponent(item.id)}&repo=${encodeURIComponent('PyDevMedo/Omnilynx')}`}
+                  </code>
+                </div>
+                {onShare && (
+                  <button className="btn btn-primary" style={{ padding: '6px 12px' }} onClick={() => onShare(item.id)}>
+                    <Share2 size={13} /> {lang === 'ar' ? 'نسخ الرابط' : 'Copy Link'}
+                  </button>
+                )}
+              </div>
               {parsed.meta.include?.length > 0 && (
                 <div style={{ marginBottom: 16, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Target processes:</span>
