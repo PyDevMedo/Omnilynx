@@ -340,6 +340,79 @@ int CmdListProcesses() {
     return 0;
 }
 
+#define OMNILYNX_IPC_MAGIC 0x4F4D4E49u
+
+struct OmnilynxInitHandshake {
+    DWORD magic;
+    DWORD pid;
+    BOOL completed;
+    BOOL modInitOk;
+    BOOL hooksOk;
+    DWORD hooksCreated;
+    DWORD hooksFailed;
+    DWORD symbolsMissing;
+    DWORD win32Error;
+    char errorMsg[256];
+};
+
+std::wstring ExtractModIdFromPath(const std::wstring& fullPath) {
+    const wchar_t* base = wcsrchr(fullPath.c_str(), L'\\');
+    std::wstring name = base ? (base + 1) : fullPath;
+    if (name.size() > 4 && _wcsicmp(name.c_str() + name.size() - 4, L".dll") == 0) {
+        name.resize(name.size() - 4);
+    }
+    // Strip _<8-hex>_<digits> version suffix if present
+    size_t lastUs = name.rfind(L'_');
+    if (lastUs != std::wstring::npos && lastUs > 0) {
+        size_t prevUs = name.rfind(L'_', lastUs - 1);
+        if (prevUs != std::wstring::npos && (lastUs - prevUs - 1) == 8) {
+            name.resize(prevUs);
+        }
+    }
+    return name;
+}
+
+bool IsTarget32BitWow64(HANDLE hProcess) {
+    BOOL isWow64 = FALSE;
+    if (IsWow64Process(hProcess, &isWow64) && isWow64) {
+        return true;
+    }
+    return false;
+}
+
+struct IpcHandshakeHandles {
+    ScopedHandle hMap;
+    ScopedHandle hDone;
+    OmnilynxInitHandshake* view = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    ~IpcHandshakeHandles() {
+        if (view) UnmapViewOfFile(view);
+        if (sd) LocalFree(sd);
+    }
+};
+
+bool CreateIpcHandshake(DWORD pid, const std::wstring& modId, IpcHandshakeHandles& out) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = FALSE;
+    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"D:(A;;GA;;;WD)(A;;GA;;;AC)", SDDL_REVISION_1, &out.sd, nullptr);
+    sa.lpSecurityDescriptor = out.sd;
+
+    std::wstring mapName = L"Local\\Omnilynx_IPC_" + std::to_wstring(pid) + L"_" + modId;
+    std::wstring evtName = L"Local\\Omnilynx_IPC_Done_" + std::to_wstring(pid) + L"_" + modId;
+
+    out.hDone.reset(CreateEventW(out.sd ? &sa : nullptr, TRUE, FALSE, evtName.c_str()));
+    out.hMap.reset(CreateFileMappingW(
+        INVALID_HANDLE_VALUE, out.sd ? &sa : nullptr, PAGE_READWRITE, 0, sizeof(OmnilynxInitHandshake), mapName.c_str()));
+    if (!out.hMap || !out.hDone) return false;
+    out.view = static_cast<OmnilynxInitHandshake*>(
+        MapViewOfFile(out.hMap.get(), FILE_MAP_ALL_ACCESS, 0, 0, sizeof(OmnilynxInitHandshake)));
+    if (!out.view) return false;
+    memset(out.view, 0, sizeof(OmnilynxInitHandshake));
+    return true;
+}
+
 int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
     std::vector<DWORD> pids = FindProcessesByNameOrPid(target);
     if (pids.empty()) {
@@ -370,16 +443,21 @@ int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
     const char* lastErrMsg = "OpenProcess failed";
     DWORD firstOkPid = 0;
     int injectedCount = 0;
+    int verifiedCount = 0;
+    DWORD totalHooksCreated = 0;
+    std::string ipcErrorDetail;
 
     const size_t pathBytes = (fullPath.size() + 1) * sizeof(wchar_t);
+    const std::wstring modId = ExtractModIdFromPath(fullPath);
     GrantAppPackagesReadExecute(fullPath);
-    TraceRuntimeLog("Injector", "CmdInject start target=" + WideToUtf8(target) + " dll=" + WideToUtf8(fullPath) + " matchedPids=" + std::to_string(pids.size()));
+    TraceRuntimeLog("Injector", "CmdInject start target=" + WideToUtf8(target) + " modId=" + WideToUtf8(modId) + " dll=" + WideToUtf8(fullPath) + " matchedPids=" + std::to_string(pids.size()));
 
     for (DWORD pid : pids) {
         if (FindLoadedModule(pid, fullPath.c_str()) != nullptr) {
             TraceRuntimeLog("Injector", "PID " + std::to_string(pid) + " already has DLL loaded");
             if (firstOkPid == 0) firstOkPid = pid;
             injectedCount++;
+            verifiedCount++;
             continue;
         }
 
@@ -389,11 +467,23 @@ int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
             pid));
         if (!hProcess) {
             lastErr = GetLastError();
-            lastErrMsg = "OpenProcess failed (try running as Administrator)";
+            lastErrMsg = (lastErr == ERROR_ACCESS_DENIED)
+                ? "Protected Process (PPL) or elevated target - OpenProcess denied"
+                : "OpenProcess failed (try running as Administrator)";
             TraceRuntimeLog("Injector", "OpenProcess FAILED pid=" + std::to_string(pid) + " err=" + FormatWin32ErrorUtf8(lastErr));
             continue;
         }
         TraceRuntimeLog("Injector", "OpenProcess OK pid=" + std::to_string(pid));
+
+        if (IsTarget32BitWow64(hProcess.get())) {
+            lastErr = ERROR_BAD_EXE_FORMAT;
+            lastErrMsg = "Architecture mismatch: 32-bit (WOW64) target cannot load 64-bit mod DLL";
+            TraceRuntimeLog("Injector", "Skipped 32-bit WOW64 pid=" + std::to_string(pid));
+            continue;
+        }
+
+        IpcHandshakeHandles ipc;
+        bool hasIpc = CreateIpcHandshake(pid, modId, ipc);
 
         ScopedRemoteMem remoteMem(
             hProcess.get(),
@@ -490,6 +580,52 @@ int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
             continue;
         }
 
+        // Wait for Two-Way IPC Handshake from OmnilynxInitThreadProc inside target process
+        if (hasIpc && ipc.hDone && ipc.view) {
+            DWORD waitIpc = WaitForSingleObject(ipc.hDone.get(), 8000);
+            if (waitIpc == WAIT_OBJECT_0 && ipc.view->completed && ipc.view->magic == OMNILYNX_IPC_MAGIC) {
+                if (!ipc.view->modInitOk || !ipc.view->hooksOk || ipc.view->hooksFailed > 0 || ipc.view->symbolsMissing > 0) {
+                    lastErr = ipc.view->win32Error ? ipc.view->win32Error : ERROR_MOD_NOT_FOUND;
+                    ipcErrorDetail = std::string("Mod init/hook failed inside target (modInitOk=")
+                        + (ipc.view->modInitOk ? "1" : "0")
+                        + ", hooksOk=" + (ipc.view->hooksOk ? "1" : "0")
+                        + ", hooksFailed=" + std::to_string(ipc.view->hooksFailed)
+                        + ", symbolsMissing=" + std::to_string(ipc.view->symbolsMissing) + ")";
+                    if (ipc.view->errorMsg[0] != '\0') {
+                        ipcErrorDetail += std::string(": ") + ipc.view->errorMsg;
+                    }
+                    lastErrMsg = ipcErrorDetail.c_str();
+                    TraceRuntimeLog("Injector", "IPC Handshake FAILED pid=" + std::to_string(pid) + " -> " + ipcErrorDetail);
+
+                    // Eject failed DLL cleanly so it does not linger in target process
+                    HMODULE badMod = FindLoadedModule(pid, fullPath.c_str());
+                    if (badMod) {
+                        auto freeLibAddr = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                            reinterpret_cast<void*>(GetProcAddress(hKernel32, "FreeLibrary")));
+                        if (freeLibAddr) {
+                            HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+                            auto pfnNt = hNtdll ? reinterpret_cast<PFN_NtCreateThreadEx>(
+                                reinterpret_cast<void*>(GetProcAddress(hNtdll, "NtCreateThreadEx"))) : nullptr;
+                            if (pfnNt) {
+                                HANDLE ht = nullptr;
+                                if (pfnNt(&ht, THREAD_ALL_ACCESS, nullptr, hProcess.get(), freeLibAddr, badMod, 0, 0, 0, 0, nullptr) == 0 && ht) {
+                                    WaitForSingleObject(ht, 5000);
+                                    CloseHandle(ht);
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                verifiedCount++;
+                totalHooksCreated += ipc.view->hooksCreated;
+                TraceRuntimeLog("Injector", "IPC Handshake VERIFIED pid=" + std::to_string(pid)
+                    + " hooksCreated=" + std::to_string(ipc.view->hooksCreated));
+            } else {
+                TraceRuntimeLog("Injector", "IPC Handshake timeout/skipped pid=" + std::to_string(pid) + " wait=" + std::to_string(waitIpc));
+            }
+        }
+
         if (firstOkPid == 0) firstOkPid = pid;
         injectedCount++;
     }
@@ -502,9 +638,11 @@ int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
         return 1;
     }
 
-    printf("{\"ok\":true,\"pid\":%lu,\"count\":%d,\"injected\":true}\n",
+    printf("{\"ok\":true,\"pid\":%lu,\"count\":%d,\"verified\":%s,\"hooksCreated\":%lu,\"injected\":true}\n",
            static_cast<unsigned long>(firstOkPid),
-           injectedCount);
+           injectedCount,
+           verifiedCount > 0 ? "true" : "false",
+           static_cast<unsigned long>(totalHooksCreated));
     return 0;
 }
 

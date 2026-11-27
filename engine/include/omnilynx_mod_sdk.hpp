@@ -90,7 +90,6 @@ static inline void Omnilynx_TraceLog(const char* fmt, ...) {
 
     DWORD written = 0;
     WriteFile(hFile, buf, static_cast<DWORD>(off), &written, nullptr);
-    FlushFileBuffers(hFile);
     CloseHandle(hFile);
 }
 
@@ -110,7 +109,37 @@ static inline void Wh_Log(PCWSTR format, ...) {
 // ============================================================================
 // Hooking & Disassembly (MinHook + HDE64)
 // ============================================================================
+// ============================================================================
+// Two-Way IPC Handshake Struct (shared between ModDLL and wendo_injector.exe)
+// ============================================================================
+#define OMNILYNX_IPC_MAGIC 0x4F4D4E49u // 'OMNI'
+
+typedef struct tagOmnilynxInitHandshake {
+    DWORD magic;
+    DWORD pid;
+    BOOL completed;
+    BOOL modInitOk;
+    BOOL hooksOk;
+    DWORD hooksCreated;
+    DWORD hooksFailed;
+    DWORD symbolsMissing;
+    DWORD win32Error;
+    char errorMsg[256];
+} OmnilynxInitHandshake;
+
 static volatile LONG g_omnilynxMhInit = 0;
+static volatile LONG g_omnilynxHooksCreated = 0;
+static volatile LONG g_omnilynxHooksFailed = 0;
+static volatile LONG g_omnilynxSymbolsMissing = 0;
+static DWORD g_omnilynxLastHookErr = 0;
+static char g_omnilynxLastErrorMsg[256] = {};
+
+static inline void Omnilynx_SetLastErrorMsg(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(g_omnilynxLastErrorMsg, sizeof(g_omnilynxLastErrorMsg), fmt, args);
+    va_end(args);
+}
 
 static inline BOOL Wh_SetFunctionHook(
     void* targetFunction,
@@ -118,6 +147,8 @@ static inline BOOL Wh_SetFunctionHook(
     void** originalFunction
 ) {
     if (!targetFunction || !hookFunction) {
+        InterlockedIncrement(&g_omnilynxHooksFailed);
+        Omnilynx_SetLastErrorMsg("Wh_SetFunctionHook: null target or hook");
         Omnilynx_TraceLog("Wh_SetFunctionHook INVALID args target=%p hook=%p", targetFunction, hookFunction);
         return FALSE;
     }
@@ -126,12 +157,22 @@ static inline BOOL Wh_SetFunctionHook(
         Omnilynx_TraceLog("MH_Initialize() -> %d", static_cast<int>(initSt));
         if (initSt != MH_OK && initSt != MH_ERROR_ALREADY_INITIALIZED) {
             InterlockedExchange(&g_omnilynxMhInit, 0);
+            InterlockedIncrement(&g_omnilynxHooksFailed);
+            g_omnilynxLastHookErr = static_cast<DWORD>(initSt);
+            Omnilynx_SetLastErrorMsg("MH_Initialize failed (%d)", static_cast<int>(initSt));
             return FALSE;
         }
     }
     MH_STATUS st = MH_CreateHook(targetFunction, hookFunction, originalFunction);
     Omnilynx_TraceLog("MH_CreateHook(target=%p, hook=%p) -> %d", targetFunction, hookFunction, static_cast<int>(st));
-    return (st == MH_OK || st == MH_ERROR_ALREADY_CREATED) ? TRUE : FALSE;
+    if (st == MH_OK || st == MH_ERROR_ALREADY_CREATED) {
+        InterlockedIncrement(&g_omnilynxHooksCreated);
+        return TRUE;
+    }
+    InterlockedIncrement(&g_omnilynxHooksFailed);
+    g_omnilynxLastHookErr = static_cast<DWORD>(st);
+    Omnilynx_SetLastErrorMsg("MH_CreateHook failed (%d)", static_cast<int>(st));
+    return FALSE;
 }
 
 static inline BOOL Wh_RemoveFunctionHook(void* targetFunction) {
@@ -147,7 +188,12 @@ static inline BOOL Wh_ApplyHookOperations(void) {
     if (InterlockedCompareExchange(&g_omnilynxMhInit, 1, 1) == 0) return TRUE;
     MH_STATUS st = MH_EnableHook(MH_ALL_HOOKS);
     Omnilynx_TraceLog("MH_EnableHook(MH_ALL_HOOKS) -> %d", static_cast<int>(st));
-    return (st == MH_OK) ? TRUE : FALSE;
+    if (st != MH_OK) {
+        g_omnilynxLastHookErr = static_cast<DWORD>(st);
+        Omnilynx_SetLastErrorMsg("MH_EnableHook failed (%d)", static_cast<int>(st));
+        return FALSE;
+    }
+    return TRUE;
 }
 
 static inline void Wh_RemoveAllHooks(void) {
@@ -919,7 +965,11 @@ static inline bool Wh_HookSymbols(
         const wchar_t* symName = (symbolHooks[i].symbols && symbolHooks[i].symbolsCount > 0) ? symbolHooks[i].symbols[0] : L"(unknown)";
         if (!resolvedAddrs[i]) {
             Omnilynx_TraceLog("  Symbol NOT FOUND: %ls (optional=%d)", symName, symbolHooks[i].optional ? 1 : 0);
-            if (!symbolHooks[i].optional) allRequiredOk = false;
+            if (!symbolHooks[i].optional) {
+                allRequiredOk = false;
+                InterlockedIncrement(&g_omnilynxSymbolsMissing);
+                Omnilynx_SetLastErrorMsg("Required symbol not found: %ls", symName);
+            }
             continue;
         }
         Omnilynx_TraceLog("  Symbol RESOLVED: %ls -> %p", symName, resolvedAddrs[i]);
@@ -945,10 +995,46 @@ static inline bool Wh_HookSymbols(
 static HANDLE g_omnilynxInitThread = nullptr;
 static volatile LONG g_omnilynxUnloading = 0;
 
+static inline void Omnilynx_SignalHandshake(BOOL modInitOk, BOOL hooksOk) {
+    DWORD pid = GetCurrentProcessId();
+    wchar_t mapName[256] = {};
+    wchar_t evtName[256] = {};
+    _snwprintf_s(mapName, 256, _TRUNCATE, L"Local\\Omnilynx_IPC_%lu_%ls", static_cast<unsigned long>(pid), WH_MOD_ID);
+    _snwprintf_s(evtName, 256, _TRUNCATE, L"Local\\Omnilynx_IPC_Done_%lu_%ls", static_cast<unsigned long>(pid), WH_MOD_ID);
+
+    HANDLE hMap = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, mapName);
+    if (hMap) {
+        auto* hs = static_cast<OmnilynxInitHandshake*>(MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(OmnilynxInitHandshake)));
+        if (hs) {
+            hs->magic = OMNILYNX_IPC_MAGIC;
+            hs->pid = pid;
+            hs->modInitOk = modInitOk;
+            hs->hooksOk = hooksOk;
+            hs->hooksCreated = static_cast<DWORD>(g_omnilynxHooksCreated);
+            hs->hooksFailed = static_cast<DWORD>(g_omnilynxHooksFailed);
+            hs->symbolsMissing = static_cast<DWORD>(g_omnilynxSymbolsMissing);
+            hs->win32Error = g_omnilynxLastHookErr;
+            strncpy_s(hs->errorMsg, sizeof(hs->errorMsg), g_omnilynxLastErrorMsg, _TRUNCATE);
+            hs->completed = TRUE;
+            UnmapViewOfFile(hs);
+        }
+        CloseHandle(hMap);
+    }
+
+    HANDLE hEvt = OpenEventW(EVENT_MODIFY_STATE, FALSE, evtName);
+    if (hEvt) {
+        SetEvent(hEvt);
+        CloseHandle(hEvt);
+    }
+}
+
 static DWORD WINAPI OmnilynxInitThreadProc(LPVOID) {
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     Omnilynx_TraceLog("OmnilynxInitThreadProc started in host=%ls", exePath);
+
+    BOOL initOk = FALSE;
+    BOOL hooksOk = FALSE;
 
     if (InterlockedCompareExchange(&g_omnilynxUnloading, 0, 0) == 0) {
 #ifdef __GNUC__
@@ -956,14 +1042,16 @@ static DWORD WINAPI OmnilynxInitThreadProc(LPVOID) {
             Omnilynx_TraceLog("Calling Wh_ModBeforeInit()");
             if (!Wh_ModBeforeInit()) {
                 Omnilynx_TraceLog("Wh_ModBeforeInit() returned FALSE, aborting init");
+                Omnilynx_SetLastErrorMsg("Wh_ModBeforeInit returned FALSE");
+                Omnilynx_SignalHandshake(FALSE, FALSE);
                 return 0;
             }
         }
 #endif
-        BOOL initOk = Wh_ModInit();
+        initOk = Wh_ModInit();
         Omnilynx_TraceLog("Wh_ModInit() returned %d", static_cast<int>(initOk));
         if (initOk) {
-            BOOL hooksOk = Wh_ApplyHookOperations();
+            hooksOk = Wh_ApplyHookOperations();
             Omnilynx_TraceLog("Wh_ApplyHookOperations() returned %d", hooksOk ? 1 : 0);
 #ifdef __GNUC__
             if (Wh_ModAfterInit) {
@@ -971,8 +1059,11 @@ static DWORD WINAPI OmnilynxInitThreadProc(LPVOID) {
                 Wh_ModAfterInit();
             }
 #endif
+        } else if (g_omnilynxLastErrorMsg[0] == '\0') {
+            Omnilynx_SetLastErrorMsg("Wh_ModInit returned FALSE");
         }
     }
+    Omnilynx_SignalHandshake(initOk, hooksOk);
     return 0;
 }
 

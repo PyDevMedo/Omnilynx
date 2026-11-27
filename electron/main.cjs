@@ -731,6 +731,8 @@ app.whenReady().then(() => {
       }
 
       let injectedAny = false;
+      let verifiedAny = false;
+      let totalHooksCreated = 0;
       let waitingForTarget = false;
       let lastErr = '';
       let lastWin32Err = 0;
@@ -746,6 +748,8 @@ app.whenReady().then(() => {
 
         if (parsed && parsed.ok) {
           injectedAny = true;
+          if (parsed.verified) verifiedAny = true;
+          if (typeof parsed.hooksCreated === 'number') totalHooksCreated += parsed.hooksCreated;
         } else if (parsed && parsed.error === 'Target process not found') {
           waitingForTarget = true;
         } else if (parsed) {
@@ -780,8 +784,10 @@ app.whenReady().then(() => {
         ok: true,
         enabled: true,
         injected: injectedAny,
+        verified: verifiedAny,
+        hooksCreated: totalHooksCreated,
         message: injectedAny
-          ? `✅ تم التشغيل والحقن في الخلفية (${[...targets, ...(hasToolMod ? ['tool-host'] : [])].join(', ')})`
+          ? `✅ تم التشغيل والتحقق (${[...targets, ...(hasToolMod ? ['tool-host'] : [])].join(', ')}${verifiedAny ? ` — ${totalHooksCreated} hooks` : ''})`
           : `⏳ مفعّل في الخلفية — بانتظار فتح ${targets.join(', ')} للحقن التلقائي`
       };
     } else {
