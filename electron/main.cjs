@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { execFile } = require('child_process');
 const https = require('https');
 
@@ -37,15 +38,45 @@ const STATE_FILE = path.join(CONFIG_DIR, 'state.json');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const SETTINGS_INI = path.join(CONFIG_DIR, 'mod_settings.ini');
 
-function cleanupStaleCompiledDlls() {
+function cleanupStaleCompiledDlls(activeState = null) {
   try {
     if (!fs.existsSync(MODS_COMPILED_DIR)) return;
+    const activePaths = new Set();
+    if (activeState && activeState.mods) {
+      for (const mData of Object.values(activeState.mods)) {
+        if (mData && mData.dllPath) activePaths.add(path.resolve(mData.dllPath).toLowerCase());
+      }
+    }
     for (const f of fs.readdirSync(MODS_COMPILED_DIR)) {
-      if ((f.includes('.old.') || f.includes('.tmp.')) && f.endsWith('.dll')) {
+      if (!f.endsWith('.dll')) continue;
+      const full = path.resolve(path.join(MODS_COMPILED_DIR, f)).toLowerCase();
+      if (f.includes('.old.') || f.includes('.tmp.') || (activeState && !activePaths.has(full))) {
         try { fs.unlinkSync(path.join(MODS_COMPILED_DIR, f)); } catch {}
       }
     }
   } catch {}
+}
+
+function getModActiveDllPath(safeId, state = null) {
+  const s = state || readJsonSafe(STATE_FILE, { mods: {} });
+  const recorded = s.mods?.[safeId]?.dllPath;
+  if (recorded && fs.existsSync(recorded)) {
+    return recorded;
+  }
+  try {
+    if (fs.existsSync(MODS_COMPILED_DIR)) {
+      const prefix = `${safeId}_`;
+      const matches = fs.readdirSync(MODS_COMPILED_DIR)
+        .filter((f) => f.endsWith('.dll') && (f.startsWith(prefix) || f === `${safeId}.dll`))
+        .map((f) => {
+          const p = path.join(MODS_COMPILED_DIR, f);
+          return { p, mtime: fs.statSync(p).mtimeMs };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+      if (matches.length > 0) return matches[0].p;
+    }
+  } catch {}
+  return path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
 }
 
 function ensureDirs() {
@@ -271,11 +302,11 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   const safeId = modId.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
   const existingPath = findModSourceFile(safeId);
   const srcPath = existingPath || path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
-  const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
-  const tmpDllPath = path.join(MODS_COMPILED_DIR, `${safeId}.tmp.${Date.now()}.dll`);
+  const codeHash = crypto.createHash('sha1').update(code || '').digest('hex').slice(0, 8);
+  const versionedDllPath = path.join(MODS_COMPILED_DIR, `${safeId}_${codeHash}_${Date.now()}.dll`);
 
-  // Best-effort cleanup of stale .old / .tmp DLLs left from previous locked replacements
-  cleanupStaleCompiledDlls();
+  const state = readJsonSafe(STATE_FILE, { mods: {} });
+  cleanupStaleCompiledDlls(state);
 
   fs.writeFileSync(srcPath, code, 'utf8');
   const needsSdkAutoInclude =
@@ -331,7 +362,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     ...(needsSdkAutoInclude ? ['-include', path.join(ENGINE_INCLUDE, 'omnilynx_mod_sdk.hpp')] : []),
     srcPath,
     '-o',
-    tmpDllPath,
+    versionedDllPath,
     `-L${ENGINE_LIB}`,
     '-lminhook',
     '-lkernel32',
@@ -350,6 +381,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     '-lversion',
     '-ldbghelp',
     '-lruntimeobject',
+    '-lwinhttp',
     '-ldxguid',
     '-luuid',
     ...extraFlags
@@ -357,26 +389,12 @@ async function compileModInternal(modId, code, compilerOptions = '') {
 
   const res = await runExecFile(compiler, args);
   let finalDllPath = null;
-  if (res.ok && fs.existsSync(tmpDllPath)) {
-    try {
-      // On Windows, an injected DLL cannot be overwritten/deleted while loaded,
-      // but it CAN be renamed out of the way so the new DLL takes the canonical name.
-      if (fs.existsSync(dllPath)) {
-        try {
-          fs.unlinkSync(dllPath);
-        } catch {
-          const oldPath = path.join(MODS_COMPILED_DIR, `${safeId}.old.${Date.now()}.dll`);
-          fs.renameSync(dllPath, oldPath);
-        }
-      }
-      fs.renameSync(tmpDllPath, dllPath);
-      finalDllPath = dllPath;
-    } catch {
-      // If even rename is blocked by an exclusive lock, keep the freshly compiled DLL path
-      finalDllPath = tmpDllPath;
-    }
+  if (res.ok && fs.existsSync(versionedDllPath)) {
+    finalDllPath = versionedDllPath;
+    state.mods[safeId] = { ...(state.mods[safeId] || {}), dllPath: finalDllPath };
+    writeJsonSafe(STATE_FILE, state);
   } else {
-    try { if (fs.existsSync(tmpDllPath)) fs.unlinkSync(tmpDllPath); } catch {}
+    try { if (fs.existsSync(versionedDllPath)) fs.unlinkSync(versionedDllPath); } catch {}
   }
 
   return {
@@ -474,7 +492,7 @@ app.whenReady().then(() => {
       const fullPath = path.join(MODS_SOURCE_DIR, file);
       const modId = stripModExt(file);
       const code = fs.readFileSync(fullPath, 'utf8');
-      const compiledDll = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
+      const compiledDll = getModActiveDllPath(modId, state);
       const localState = state.mods[modId] || {};
 
       mods.push({
@@ -502,15 +520,16 @@ app.whenReady().then(() => {
 
   ipcMain.handle('mods:delete', async (_, payload) => {
     const modId = typeof payload === 'string' ? payload : payload.id;
+    const state = readJsonSafe(STATE_FILE, { mods: {} });
     const filePath = findModSourceFile(modId);
-    const dllPath = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
+    const dllPath = getModActiveDllPath(modId, state);
 
     if (filePath && fs.existsSync(ENGINE_BIN)) {
       try {
         const code = fs.readFileSync(filePath, 'utf8');
         const targets = extractTargetsFromCode(code);
         for (const target of targets) {
-          await runExecFile(ENGINE_BIN, ['eject', target, `${modId}.dll`]);
+          await runExecFile(ENGINE_BIN, ['eject', target, path.basename(dllPath)]);
         }
       } catch {
         // best-effort eject
@@ -520,7 +539,6 @@ app.whenReady().then(() => {
     try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* ignore */ }
     try { if (fs.existsSync(dllPath)) fs.unlinkSync(dllPath); } catch { /* ignore */ }
 
-    const state = readJsonSafe(STATE_FILE, { mods: {} });
     delete state.mods[modId];
     writeJsonSafe(STATE_FILE, state);
     return { ok: true, id: modId };
@@ -555,7 +573,7 @@ app.whenReady().then(() => {
     const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
     const srcPath = findModSourceFile(safeId) || path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
     const resolvedCode = (code && code.trim()) ? code : (fs.existsSync(srcPath) ? fs.readFileSync(srcPath, 'utf8') : '');
-    const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
+    let dllPath = getModActiveDllPath(safeId, state);
     const targets = extractTargetsFromCode(resolvedCode);
 
     if (!fs.existsSync(ENGINE_BIN)) {
@@ -614,6 +632,11 @@ app.whenReady().then(() => {
         (fs.existsSync(headerPath) && fs.statSync(headerPath).mtimeMs > dllMtime);
       let activeDllPath = dllPath;
       if (needsCompile) {
+        if (fs.existsSync(dllPath)) {
+          for (const target of targets) {
+            await runExecFile(ENGINE_BIN, ['eject', target, path.basename(dllPath)]);
+          }
+        }
         const comp = await compileModInternal(safeId, resolvedCode, compilerOptions);
         if (!comp.ok) {
           const msg = `Compile failed for ${safeId}: ${comp.stderr}`;
@@ -661,7 +684,7 @@ app.whenReady().then(() => {
         };
       }
 
-      state.mods[safeId] = { ...(state.mods[safeId] || {}), enabled: true };
+      state.mods[safeId] = { ...(state.mods[safeId] || {}), enabled: true, dllPath: activeDllPath };
       writeJsonSafe(STATE_FILE, state);
 
       return {
@@ -674,7 +697,7 @@ app.whenReady().then(() => {
       };
     } else {
       for (const target of targets) {
-        await runExecFile(ENGINE_BIN, ['eject', target, `${safeId}.dll`]);
+        await runExecFile(ENGINE_BIN, ['eject', target, path.basename(dllPath)]);
       }
       state.mods[safeId] = { ...(state.mods[safeId] || {}), enabled: false };
       writeJsonSafe(STATE_FILE, state);
@@ -701,13 +724,14 @@ app.whenReady().then(() => {
           await runExecFile(ENGINE_BIN, ['apply', safeId, target, 'on', paramVal]);
         }
       } else {
-        const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
+        let dllPath = getModActiveDllPath(safeId, state);
         if (!fs.existsSync(dllPath) && code) {
-          await compileModInternal(safeId, code, '');
+          const comp = await compileModInternal(safeId, code, '');
+          if (comp.ok && comp.dllPath) dllPath = comp.dllPath;
         }
         if (fs.existsSync(dllPath)) {
           for (const target of targets) {
-            await runExecFile(ENGINE_BIN, ['eject', target, `${safeId}.dll`]);
+            await runExecFile(ENGINE_BIN, ['eject', target, path.basename(dllPath)]);
           }
           await new Promise((r) => setTimeout(r, 150));
           for (const target of targets) {
@@ -1077,9 +1101,12 @@ app.whenReady().then(() => {
       }
 
       const alivePids = new Set(processes.map((p) => p.pid));
+      for (const modId of [...injectedPidsByMod.keys()]) {
+        if (!enabledIds.includes(modId)) injectedPidsByMod.delete(modId);
+      }
       for (const modId of enabledIds) {
         const isExt = EXTERNAL_MOD_IDS.has(modId);
-        const dllPath = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
+        const dllPath = getModActiveDllPath(modId, state);
         const srcPath = findModSourceFile(modId);
         if (!srcPath || (!isExt && !fs.existsSync(dllPath))) continue;
 
@@ -1124,7 +1151,7 @@ app.whenReady().then(() => {
     } finally {
       watcherBusy = false;
     }
-  }, 5000);
+  }, 2000);
 });
 
 app.on('window-all-closed', () => {

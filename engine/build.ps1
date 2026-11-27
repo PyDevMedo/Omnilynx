@@ -51,7 +51,7 @@ if (-not $VerifyOnly) {
             -O2 `
             -Wall -Wextra -Wpedantic -Werror `
             -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -DUNICODE -D_UNICODE `
-            "-DWH_MOD_ID=L`"$modId`"" `
+            "-DWH_MOD_ID=L\`"$modId\`"" `
             -shared -static -static-libgcc -static-libstdc++ `
             "-I$IncludeDir" `
             $mod.FullName `

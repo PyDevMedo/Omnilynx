@@ -1,16 +1,13 @@
 #pragma once
 
 // Omnilynx Native .wh.cpp Compatibility SDK
-// Maps Windhawk Wh_* APIs cleanly onto MinHook + Win32 APIs with RAII safety and zero bloat.
+// Complete Windhawk Mod API compatibility layer backed by MinHook, HDE64, DbgHelp, and WinHttp.
 
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
 #endif
 #ifndef WINVER
 #define WINVER 0x0A00
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -48,7 +45,9 @@ __declspec(dllexport) inline LRESULT CALLBACK OmnilynxGetMsgProc(int code, WPARA
     return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
-// Flushed runtime trace logger inside target process (%LOCALAPPDATA%\Omnilynx\runtime_trace.log)
+// ============================================================================
+// Runtime Trace & Logging
+// ============================================================================
 static inline void Omnilynx_TraceLog(const char* fmt, ...) {
     wchar_t dir[1024] = {};
     DWORD n = ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Omnilynx", dir, 1024);
@@ -95,8 +94,7 @@ static inline void Omnilynx_TraceLog(const char* fmt, ...) {
     CloseHandle(hFile);
 }
 
-// Logging helper (writes to OutputDebugStringW + runtime_trace.log)
-static inline void Wh_Log(const wchar_t* format, ...) {
+static inline void Wh_Log(PCWSTR format, ...) {
     if (!format) return;
     wchar_t buffer[1024];
     va_list args;
@@ -109,35 +107,47 @@ static inline void Wh_Log(const wchar_t* format, ...) {
     Omnilynx_TraceLog("Wh_Log: %ls", buffer);
 }
 
+// ============================================================================
+// Hooking & Disassembly (MinHook + HDE64)
+// ============================================================================
 static volatile LONG g_omnilynxMhInit = 0;
 
-static inline bool Wh_SetFunctionHook(
+static inline BOOL Wh_SetFunctionHook(
     void* targetFunction,
     void* hookFunction,
     void** originalFunction
 ) {
     if (!targetFunction || !hookFunction) {
         Omnilynx_TraceLog("Wh_SetFunctionHook INVALID args target=%p hook=%p", targetFunction, hookFunction);
-        return false;
+        return FALSE;
     }
     if (InterlockedCompareExchange(&g_omnilynxMhInit, 1, 0) == 0) {
         MH_STATUS initSt = MH_Initialize();
         Omnilynx_TraceLog("MH_Initialize() -> %d", static_cast<int>(initSt));
         if (initSt != MH_OK && initSt != MH_ERROR_ALREADY_INITIALIZED) {
             InterlockedExchange(&g_omnilynxMhInit, 0);
-            return false;
+            return FALSE;
         }
     }
     MH_STATUS st = MH_CreateHook(targetFunction, hookFunction, originalFunction);
     Omnilynx_TraceLog("MH_CreateHook(target=%p, hook=%p) -> %d", targetFunction, hookFunction, static_cast<int>(st));
-    return (st == MH_OK || st == MH_ERROR_ALREADY_CREATED);
+    return (st == MH_OK || st == MH_ERROR_ALREADY_CREATED) ? TRUE : FALSE;
 }
 
-static inline bool Wh_ApplyHookOperations(void) {
-    if (InterlockedCompareExchange(&g_omnilynxMhInit, 1, 1) == 0) return true;
+static inline BOOL Wh_RemoveFunctionHook(void* targetFunction) {
+    if (!targetFunction) return FALSE;
+    if (InterlockedCompareExchange(&g_omnilynxMhInit, 1, 1) == 0) return FALSE;
+    MH_DisableHook(targetFunction);
+    MH_STATUS st = MH_RemoveHook(targetFunction);
+    Omnilynx_TraceLog("Wh_RemoveFunctionHook(target=%p) -> %d", targetFunction, static_cast<int>(st));
+    return (st == MH_OK || st == MH_ERROR_NOT_CREATED) ? TRUE : FALSE;
+}
+
+static inline BOOL Wh_ApplyHookOperations(void) {
+    if (InterlockedCompareExchange(&g_omnilynxMhInit, 1, 1) == 0) return TRUE;
     MH_STATUS st = MH_EnableHook(MH_ALL_HOOKS);
     Omnilynx_TraceLog("MH_EnableHook(MH_ALL_HOOKS) -> %d", static_cast<int>(st));
-    return st == MH_OK;
+    return (st == MH_OK) ? TRUE : FALSE;
 }
 
 static inline void Wh_RemoveAllHooks(void) {
@@ -147,7 +157,118 @@ static inline void Wh_RemoveAllHooks(void) {
     }
 }
 
-// Resolve %LOCALAPPDATA%\Omnilynx\Config\mod_settings.ini
+typedef struct tagWH_DISASM_RESULT {
+    size_t length;
+    char text[96];
+} WH_DISASM_RESULT;
+
+typedef struct {
+    uint8_t len;
+    uint8_t p_rep;
+    uint8_t p_lock;
+    uint8_t p_seg;
+    uint8_t p_66;
+    uint8_t p_67;
+    uint8_t rex;
+    uint8_t rex_w;
+    uint8_t rex_r;
+    uint8_t rex_x;
+    uint8_t rex_b;
+    uint8_t opcode;
+    uint8_t opcode2;
+    uint8_t modrm;
+    uint8_t modrm_mod;
+    uint8_t modrm_reg;
+    uint8_t modrm_rm;
+    uint8_t sib;
+    uint8_t sib_scale;
+    uint8_t sib_index;
+    uint8_t sib_base;
+    union {
+        uint8_t imm8;
+        uint16_t imm16;
+        uint32_t imm32;
+        uint64_t imm64;
+    } imm;
+    union {
+        uint8_t disp8;
+        uint16_t disp16;
+        uint32_t disp32;
+    } disp;
+    uint32_t flags;
+} omnilynx_hde64s;
+
+unsigned int hde64_disasm(const void* code, omnilynx_hde64s* hs);
+
+static inline BOOL Wh_Disasm(void* address, WH_DISASM_RESULT* result) {
+    if (!address || !result) return FALSE;
+    memset(result, 0, sizeof(*result));
+    omnilynx_hde64s hs{};
+    unsigned int len = hde64_disasm(address, &hs);
+    if (len == 0 || (hs.flags & 0x00001000u)) {
+        return FALSE;
+    }
+    result->length = len;
+
+    static const char* const regs64[16] = {
+        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+        "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15"
+    };
+    static const char* const regs32[16] = {
+        "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi",
+        "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d"
+    };
+
+    const uint8_t op = hs.opcode;
+    const uint8_t regIdx = ((hs.rex_r ? 8 : 0) | hs.modrm_reg) & 15;
+    const uint8_t rmIdx = ((hs.rex_b ? 8 : 0) | hs.modrm_rm) & 15;
+    const char* regName = hs.rex_w ? regs64[regIdx] : regs32[regIdx];
+    const char* baseName = regs64[rmIdx];
+
+    if (op == 0xC3 || op == 0xC2) {
+        snprintf(result->text, sizeof(result->text), "ret");
+    } else if (op == 0xCC) {
+        snprintf(result->text, sizeof(result->text), "int3");
+    } else if (op == 0x90) {
+        snprintf(result->text, sizeof(result->text), "nop");
+    } else if (op == 0xE8) {
+        int64_t rel = static_cast<int32_t>(hs.imm.imm32);
+        uintptr_t target = reinterpret_cast<uintptr_t>(address) + len + rel;
+        snprintf(result->text, sizeof(result->text), "call 0x%llx", static_cast<unsigned long long>(target));
+    } else if (op == 0xE9 || op == 0xEB) {
+        int64_t rel = (op == 0xEB) ? static_cast<int8_t>(hs.imm.imm8) : static_cast<int32_t>(hs.imm.imm32);
+        uintptr_t target = reinterpret_cast<uintptr_t>(address) + len + rel;
+        snprintf(result->text, sizeof(result->text), "jmp 0x%llx", static_cast<unsigned long long>(target));
+    } else if ((op == 0x8B || op == 0x8D) && hs.modrm_mod != 3) {
+        const char* mnem = (op == 0x8D) ? "lea" : "mov";
+        if (hs.modrm_mod == 0 && hs.modrm_rm != 4 && hs.modrm_rm != 5) {
+            snprintf(result->text, sizeof(result->text), "%s %s, [%s]", mnem, regName, baseName);
+        } else if (hs.modrm_mod == 1 && hs.modrm_rm != 4) {
+            int8_t d = static_cast<int8_t>(hs.disp.disp8);
+            if (d >= 0) snprintf(result->text, sizeof(result->text), "%s %s, [%s+0x%x]", mnem, regName, baseName, static_cast<unsigned>(d));
+            else snprintf(result->text, sizeof(result->text), "%s %s, [%s-0x%x]", mnem, regName, baseName, static_cast<unsigned>(-d));
+        } else if (hs.modrm_mod == 2 && hs.modrm_rm != 4) {
+            int32_t d = static_cast<int32_t>(hs.disp.disp32);
+            if (d >= 0) snprintf(result->text, sizeof(result->text), "%s %s, [%s+0x%x]", mnem, regName, baseName, static_cast<unsigned>(d));
+            else snprintf(result->text, sizeof(result->text), "%s %s, [%s-0x%x]", mnem, regName, baseName, static_cast<unsigned>(-d));
+        } else {
+            snprintf(result->text, sizeof(result->text), "%s %s, [...]", mnem, regName);
+        }
+    } else if (op == 0x89 && hs.modrm_mod == 3) {
+        snprintf(result->text, sizeof(result->text), "mov %s, %s", hs.rex_w ? regs64[rmIdx] : regs32[rmIdx], regName);
+    } else if (op >= 0x50 && op <= 0x57) {
+        snprintf(result->text, sizeof(result->text), "push %s", regs64[((hs.rex_b ? 8 : 0) | (op - 0x50)) & 15]);
+    } else if (op >= 0x58 && op <= 0x5F) {
+        snprintf(result->text, sizeof(result->text), "pop %s", regs64[((hs.rex_b ? 8 : 0) | (op - 0x58)) & 15]);
+    } else {
+        snprintf(result->text, sizeof(result->text), "db 0x%02x", op);
+    }
+    return TRUE;
+}
+
+// ============================================================================
+// Settings & Persistent Storage
+// ============================================================================
 static inline const wchar_t* Omnilynx_GetSettingsIniPath(wchar_t* outBuf, DWORD bufLen) {
     if (!outBuf || bufLen == 0) return L"";
 #ifdef WENDO_SETTINGS_INI
@@ -167,8 +288,7 @@ static inline const wchar_t* Omnilynx_GetSettingsIniPath(wchar_t* outBuf, DWORD 
 #endif
 }
 
-// Per-mod storage path: %LOCALAPPDATA%\Omnilynx\Storage\<WH_MOD_ID>
-static inline BOOL Wh_GetModStoragePath(wchar_t* outPath, size_t maxChars) {
+static inline BOOL Wh_GetModStoragePath(PWSTR outPath, size_t maxChars) {
     if (!outPath || maxChars == 0) return FALSE;
     wchar_t base[1024] = {};
     DWORD n = ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Omnilynx\\Storage", base, 1024);
@@ -179,7 +299,31 @@ static inline BOOL Wh_GetModStoragePath(wchar_t* outPath, size_t maxChars) {
     return TRUE;
 }
 
-static inline int Wh_GetIntSetting(const wchar_t* valueName, ...) {
+static inline void Omnilynx_GetBinaryValuePath(PCWSTR valueName, wchar_t* outPath, size_t maxChars) {
+    wchar_t storage[1024] = {};
+    if (!Wh_GetModStoragePath(storage, 1024)) {
+        outPath[0] = L'\0';
+        return;
+    }
+    wchar_t binDir[1056] = {};
+    _snwprintf_s(binDir, 1056, _TRUNCATE, L"%s\\values", storage);
+    CreateDirectoryW(binDir, nullptr);
+
+    wchar_t safeName[256] = {};
+    size_t idx = 0;
+    for (size_t i = 0; valueName && valueName[i] && idx < 250; ++i) {
+        wchar_t c = valueName[i];
+        if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || (c >= L'0' && c <= L'9') || c == L'-' || c == L'_') {
+            safeName[idx++] = c;
+        } else {
+            safeName[idx++] = L'_';
+        }
+    }
+    safeName[idx] = L'\0';
+    _snwprintf_s(outPath, maxChars, _TRUNCATE, L"%s\\%s.bin", binDir, safeName);
+}
+
+static inline int Wh_GetIntSetting(PCWSTR valueName, ...) {
     if (!valueName) return 0;
     wchar_t formattedName[256];
     va_list args;
@@ -192,7 +336,7 @@ static inline int Wh_GetIntSetting(const wchar_t* valueName, ...) {
     return static_cast<int>(GetPrivateProfileIntW(L"Settings", formattedName, 0, iniPath));
 }
 
-static inline const wchar_t* Wh_GetStringSetting(const wchar_t* valueName, ...) {
+static inline PCWSTR Wh_GetStringSetting(PCWSTR valueName, ...) {
     if (!valueName) return nullptr;
     wchar_t formattedName[256];
     va_list args;
@@ -208,11 +352,11 @@ static inline const wchar_t* Wh_GetStringSetting(const wchar_t* valueName, ...) 
     return buf;
 }
 
-static inline void Wh_FreeStringSetting(const wchar_t* string) {
+static inline void Wh_FreeStringSetting(PCWSTR string) {
     if (string) free(const_cast<wchar_t*>(string));
 }
 
-static inline void Wh_SetIntSetting(const wchar_t* valueName, int value) {
+static inline void Wh_SetIntSetting(PCWSTR valueName, int value) {
     if (!valueName) return;
     wchar_t iniPath[1024];
     Omnilynx_GetSettingsIniPath(iniPath, 1024);
@@ -221,30 +365,30 @@ static inline void Wh_SetIntSetting(const wchar_t* valueName, int value) {
     WritePrivateProfileStringW(L"Settings", valueName, buf, iniPath);
 }
 
-static inline void Wh_SetStringSetting(const wchar_t* valueName, const wchar_t* value) {
+static inline void Wh_SetStringSetting(PCWSTR valueName, PCWSTR value) {
     if (!valueName) return;
     wchar_t iniPath[1024];
     Omnilynx_GetSettingsIniPath(iniPath, 1024);
     WritePrivateProfileStringW(L"Settings", valueName, value ? value : L"", iniPath);
 }
 
-static inline int Wh_GetIntValue(const wchar_t* valueName, int defaultValue) {
+static inline int Wh_GetIntValue(PCWSTR valueName, int defaultValue) {
     if (!valueName) return defaultValue;
     wchar_t iniPath[1024];
     Omnilynx_GetSettingsIniPath(iniPath, 1024);
     return static_cast<int>(GetPrivateProfileIntW(L"Values", valueName, defaultValue, iniPath));
 }
 
-static inline void Wh_SetIntValue(const wchar_t* valueName, int value) {
-    if (!valueName) return;
+static inline BOOL Wh_SetIntValue(PCWSTR valueName, int value) {
+    if (!valueName) return FALSE;
     wchar_t iniPath[1024];
     Omnilynx_GetSettingsIniPath(iniPath, 1024);
     wchar_t buf[32];
     _snwprintf_s(buf, 32, _TRUNCATE, L"%d", value);
-    WritePrivateProfileStringW(L"Values", valueName, buf, iniPath);
+    return WritePrivateProfileStringW(L"Values", valueName, buf, iniPath);
 }
 
-static inline size_t Wh_GetStringValue(const wchar_t* valueName, wchar_t* stringBuffer, size_t bufferChars) {
+static inline size_t Wh_GetStringValue(PCWSTR valueName, PWSTR stringBuffer, size_t bufferChars) {
     if (!valueName || !stringBuffer || bufferChars == 0) return 0;
     wchar_t iniPath[1024];
     Omnilynx_GetSettingsIniPath(iniPath, 1024);
@@ -252,20 +396,209 @@ static inline size_t Wh_GetStringValue(const wchar_t* valueName, wchar_t* string
         GetPrivateProfileStringW(L"Values", valueName, L"", stringBuffer, static_cast<DWORD>(bufferChars), iniPath));
 }
 
-static inline void Wh_SetStringValue(const wchar_t* valueName, const wchar_t* value) {
-    if (!valueName) return;
+static inline BOOL Wh_SetStringValue(PCWSTR valueName, PCWSTR value) {
+    if (!valueName) return FALSE;
     wchar_t iniPath[1024];
     Omnilynx_GetSettingsIniPath(iniPath, 1024);
-    WritePrivateProfileStringW(L"Values", valueName, value ? value : L"", iniPath);
+    return WritePrivateProfileStringW(L"Values", valueName, value ? value : L"", iniPath);
 }
 
-// Optional lifecycle hooks (weakly declared so mods may omit them without redefinition errors)
+static inline size_t Wh_GetBinaryValue(PCWSTR valueName, void* buffer, size_t bufferSize) {
+    if (!valueName) return 0;
+    wchar_t binPath[1088] = {};
+    Omnilynx_GetBinaryValuePath(valueName, binPath, 1088);
+    if (!binPath[0]) return 0;
+
+    HANDLE hFile = CreateFileW(binPath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return 0;
+
+    LARGE_INTEGER fileSize{};
+    if (!GetFileSizeEx(hFile, &fileSize) || fileSize.QuadPart <= 0) {
+        CloseHandle(hFile);
+        return 0;
+    }
+
+    size_t total = static_cast<size_t>(fileSize.QuadPart);
+    if (!buffer || bufferSize == 0) {
+        CloseHandle(hFile);
+        return total;
+    }
+
+    DWORD toRead = static_cast<DWORD>(total < bufferSize ? total : bufferSize);
+    DWORD readBytes = 0;
+    ReadFile(hFile, buffer, toRead, &readBytes, nullptr);
+    CloseHandle(hFile);
+    return static_cast<size_t>(readBytes);
+}
+
+static inline BOOL Wh_SetBinaryValue(PCWSTR valueName, const void* buffer, size_t bufferSize) {
+    if (!valueName) return FALSE;
+    wchar_t binPath[1088] = {};
+    Omnilynx_GetBinaryValuePath(valueName, binPath, 1088);
+    if (!binPath[0]) return FALSE;
+
+    HANDLE hFile = CreateFileW(binPath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return FALSE;
+
+    DWORD written = 0;
+    BOOL ok = TRUE;
+    if (buffer && bufferSize > 0) {
+        ok = WriteFile(hFile, buffer, static_cast<DWORD>(bufferSize), &written, nullptr);
+    }
+    CloseHandle(hFile);
+    return ok;
+}
+
+static inline BOOL Wh_DeleteValue(PCWSTR valueName) {
+    if (!valueName) return FALSE;
+    wchar_t iniPath[1024];
+    Omnilynx_GetSettingsIniPath(iniPath, 1024);
+    BOOL iniOk = WritePrivateProfileStringW(L"Values", valueName, nullptr, iniPath);
+
+    wchar_t binPath[1088] = {};
+    Omnilynx_GetBinaryValuePath(valueName, binPath, 1088);
+    BOOL binOk = binPath[0] ? DeleteFileW(binPath) : FALSE;
+    return (iniOk || binOk) ? TRUE : FALSE;
+}
+
+// ============================================================================
+// URL Content Fetcher (Wh_GetUrlContent / Wh_FreeUrlContent)
+// ============================================================================
+typedef struct tagWH_GET_URL_CONTENT_OPTIONS {
+    size_t optionsSize;
+    PCWSTR targetFilePath;
+} WH_GET_URL_CONTENT_OPTIONS;
+
+typedef struct tagWH_URL_CONTENT {
+    const char* data;
+    size_t length;
+    int statusCode;
+} WH_URL_CONTENT;
+
+static inline const WH_URL_CONTENT* Wh_GetUrlContent(
+    PCWSTR url,
+    const WH_GET_URL_CONTENT_OPTIONS* options)
+{
+    if (!url) return nullptr;
+    HMODULE hWinHttp = LoadLibraryW(L"winhttp.dll");
+    if (!hWinHttp) return nullptr;
+
+    using WinHttpOpenFn = void*(WINAPI*)(PCWSTR, DWORD, PCWSTR, PCWSTR, DWORD);
+    using WinHttpConnectFn = void*(WINAPI*)(void*, PCWSTR, WORD, DWORD);
+    using WinHttpOpenRequestFn = void*(WINAPI*)(void*, PCWSTR, PCWSTR, PCWSTR, PCWSTR, PCWSTR*, DWORD);
+    using WinHttpSendRequestFn = BOOL(WINAPI*)(void*, PCWSTR, DWORD, void*, DWORD, DWORD, DWORD_PTR);
+    using WinHttpReceiveResponseFn = BOOL(WINAPI*)(void*, void*);
+    using WinHttpQueryHeadersFn = BOOL(WINAPI*)(void*, DWORD, PCWSTR, void*, DWORD*, DWORD*);
+    using WinHttpReadDataFn = BOOL(WINAPI*)(void*, void*, DWORD, DWORD*);
+    using WinHttpCloseHandleFn = BOOL(WINAPI*)(void*);
+    using WinHttpCrackUrlFn = BOOL(WINAPI*)(PCWSTR, DWORD, DWORD, void*);
+
+    struct URL_COMPONENTS_RAW {
+        DWORD dwStructSize;
+        LPWSTR lpszScheme;
+        DWORD dwSchemeLength;
+        int nScheme;
+        LPWSTR lpszHostName;
+        DWORD dwHostNameLength;
+        WORD nPort;
+        LPWSTR lpszUserName;
+        DWORD dwUserNameLength;
+        LPWSTR lpszPassword;
+        DWORD dwPasswordLength;
+        LPWSTR lpszUrlPath;
+        DWORD dwUrlPathLength;
+        LPWSTR lpszExtraInfo;
+        DWORD dwExtraInfoLength;
+    };
+
+    auto fnOpen = reinterpret_cast<WinHttpOpenFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpOpen")));
+    auto fnConnect = reinterpret_cast<WinHttpConnectFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpConnect")));
+    auto fnOpenReq = reinterpret_cast<WinHttpOpenRequestFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpOpenRequest")));
+    auto fnSend = reinterpret_cast<WinHttpSendRequestFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpSendRequest")));
+    auto fnRecv = reinterpret_cast<WinHttpReceiveResponseFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpReceiveResponse")));
+    auto fnQuery = reinterpret_cast<WinHttpQueryHeadersFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpQueryHeaders")));
+    auto fnRead = reinterpret_cast<WinHttpReadDataFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpReadData")));
+    auto fnClose = reinterpret_cast<WinHttpCloseHandleFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpCloseHandle")));
+    auto fnCrack = reinterpret_cast<WinHttpCrackUrlFn>(reinterpret_cast<void*>(GetProcAddress(hWinHttp, "WinHttpCrackUrl")));
+    if (!fnOpen || !fnConnect || !fnOpenReq || !fnSend || !fnRecv || !fnQuery || !fnRead || !fnClose || !fnCrack) {
+        return nullptr;
+    }
+
+    wchar_t host[256] = {};
+    wchar_t pathBuf[2048] = {};
+    URL_COMPONENTS_RAW uc{};
+    uc.dwStructSize = sizeof(uc);
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = 256;
+    uc.lpszUrlPath = pathBuf;
+    uc.dwUrlPathLength = 2048;
+    if (!fnCrack(url, 0, 0, &uc)) return nullptr;
+
+    void* hSession = fnOpen(L"Omnilynx/1.0", 0, nullptr, nullptr, 0);
+    if (!hSession) return nullptr;
+    void* hConnect = fnConnect(hSession, host, uc.nPort, 0);
+    if (!hConnect) { fnClose(hSession); return nullptr; }
+    DWORD flags = (uc.nScheme == 2) ? 0x00800000u : 0u; // WINHTTP_FLAG_SECURE
+    void* hReq = fnOpenReq(hConnect, L"GET", pathBuf[0] ? pathBuf : L"/", nullptr, nullptr, nullptr, flags);
+    if (!hReq) { fnClose(hConnect); fnClose(hSession); return nullptr; }
+
+    WH_URL_CONTENT* res = nullptr;
+    if (fnSend(hReq, nullptr, 0, nullptr, 0, 0, 0) && fnRecv(hReq, nullptr)) {
+        DWORD statusCode = 0;
+        DWORD scSize = sizeof(statusCode);
+        fnQuery(hReq, 19u | 0x20000000u, nullptr, &statusCode, &scSize, nullptr); // WINHTTP_QUERY_STATUS_CODE | FLAG_NUMBER
+
+        char* data = nullptr;
+        size_t total = 0;
+        char chunk[4096];
+        DWORD readBytes = 0;
+        while (fnRead(hReq, chunk, sizeof(chunk), &readBytes) && readBytes > 0) {
+            char* grown = static_cast<char*>(realloc(data, total + readBytes + 1));
+            if (!grown) break;
+            data = grown;
+            memcpy(data + total, chunk, readBytes);
+            total += readBytes;
+            data[total] = '\0';
+        }
+        if (options && options->targetFilePath && data) {
+            HANDLE hf = CreateFileW(options->targetFilePath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD w = 0;
+                WriteFile(hf, data, static_cast<DWORD>(total), &w, nullptr);
+                CloseHandle(hf);
+            }
+        }
+        res = static_cast<WH_URL_CONTENT*>(calloc(1, sizeof(WH_URL_CONTENT)));
+        if (res) {
+            res->data = data;
+            res->length = total;
+            res->statusCode = static_cast<int>(statusCode);
+        } else {
+            free(data);
+        }
+    }
+    fnClose(hReq);
+    fnClose(hConnect);
+    fnClose(hSession);
+    return res;
+}
+
+static inline void Wh_FreeUrlContent(const WH_URL_CONTENT* content) {
+    if (!content) return;
+    free(const_cast<char*>(content->data));
+    free(const_cast<WH_URL_CONTENT*>(content));
+}
+
+// ============================================================================
+// Lifecycle Hooks
+// ============================================================================
 BOOL Wh_ModInit(void);
 
 #ifdef __GNUC__
 __attribute__((weak)) void Wh_ModUninit(void);
-__attribute__((weak)) void Wh_ModBeforeInit(void);
+__attribute__((weak)) BOOL Wh_ModBeforeInit(void);
 __attribute__((weak)) void Wh_ModAfterInit(void);
+__attribute__((weak)) void Wh_ModBeforeUninit(void);
 __attribute__((weak)) void Wh_ModSettingsChanged(void);
 #else
 void Wh_ModUninit(void);
@@ -273,7 +606,7 @@ void Wh_ModSettingsChanged(void);
 #endif
 
 // ============================================================================
-// Native DbgHelp PDB Symbol Resolution (Wh_FindFirstSymbol / Wh_HookSymbols)
+// Native DbgHelp PDB Symbol Resolution (Wh_FindFirstSymbol* / Wh_HookSymbols)
 // ============================================================================
 typedef struct WH_FIND_SYMBOL_OPTIONS {
     size_t optionsSize;
@@ -282,8 +615,8 @@ typedef struct WH_FIND_SYMBOL_OPTIONS {
 
 typedef struct WH_FIND_SYMBOL {
     void* address;
-    const wchar_t* symbol;
-    const wchar_t* symbolDecorated;
+    PCWSTR symbol;
+    PCWSTR symbolDecorated;
 } WH_FIND_SYMBOL;
 
 typedef struct WH_SYMBOL_HOOK {
@@ -296,7 +629,7 @@ typedef struct WH_SYMBOL_HOOK {
 
 typedef struct WH_HOOK_SYMBOLS_OPTIONS {
     size_t optionsSize;
-    const wchar_t* symbolServer;
+    PCWSTR symbolServer;
     bool noCache;
 } WH_HOOK_SYMBOLS_OPTIONS;
 
@@ -331,7 +664,7 @@ struct SYMBOL_INFOW_RAW {
 
 using SymSetOptionsFn = DWORD(WINAPI*)(DWORD);
 using SymInitializeWFn = BOOL(WINAPI*)(HANDLE, PCWSTR, BOOL);
-using SymCleanupFn = BOOL(WINAPI*)(HANDLE);
+using SymSetSearchPathWFn = BOOL(WINAPI*)(HANDLE, PCWSTR);
 using SymLoadModuleExWFn = DWORD64(WINAPI*)(HANDLE, HANDLE, PCWSTR, PCWSTR, DWORD64, DWORD, void*, DWORD);
 using SymEnumSymbolsProcW = BOOL(CALLBACK*)(SYMBOL_INFOW_RAW*, ULONG, PVOID);
 using SymEnumSymbolsWFn = BOOL(WINAPI*)(HANDLE, ULONG64, PCWSTR, SymEnumSymbolsProcW, PVOID);
@@ -352,8 +685,16 @@ static inline HMODULE GetDbgHelp() noexcept {
     return hDbg;
 }
 
-static inline bool EnsureSymInitialized() noexcept {
+static inline bool EnsureSymInitialized(PCWSTR customServer = nullptr) noexcept {
     static volatile LONG s_init = 0;
+    wchar_t symCache[1024] = {};
+    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Omnilynx\\symbols", symCache, 1024);
+    CreateDirectoryW(symCache, nullptr);
+
+    PCWSTR server = (customServer && customServer[0]) ? customServer : L"https://msdl.microsoft.com/download/symbols";
+    wchar_t symPath[1280] = {};
+    _snwprintf_s(symPath, 1280, _TRUNCATE, L"srv*%s*%s", symCache, server);
+
     if (InterlockedCompareExchange(&s_init, 1, 0) == 0) {
         HMODULE hDbg = GetDbgHelp();
         if (!hDbg) {
@@ -369,23 +710,20 @@ static inline bool EnsureSymInitialized() noexcept {
         if (symSetOpts) {
             symSetOpts(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
         }
-
-        wchar_t symCache[1024] = {};
-        ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Omnilynx\\symbols", symCache, 1024);
-        CreateDirectoryW(symCache, nullptr);
-
-        wchar_t symPath[1280] = {};
-        _snwprintf_s(symPath, 1280, _TRUNCATE, L"srv*%s*https://msdl.microsoft.com/download/symbols", symCache);
         if (!symInitW(GetCurrentProcess(), symPath, FALSE)) {
             InterlockedExchange(&s_init, 0);
             return false;
         }
+    } else if (customServer && customServer[0]) {
+        HMODULE hDbg = GetDbgHelp();
+        auto symSetPath = reinterpret_cast<SymSetSearchPathWFn>(reinterpret_cast<void*>(GetProcAddress(hDbg, "SymSetSearchPathW")));
+        if (symSetPath) symSetPath(GetCurrentProcess(), symPath);
     }
     return true;
 }
 
-static inline DWORD64 LoadModuleSymbols(HMODULE hModule) noexcept {
-    if (!EnsureSymInitialized()) return 0;
+static inline DWORD64 LoadModuleSymbols(HMODULE hModule, PCWSTR customServer = nullptr) noexcept {
+    if (!EnsureSymInitialized(customServer)) return 0;
     HMODULE hDbg = GetDbgHelp();
     auto symLoad = reinterpret_cast<SymLoadModuleExWFn>(reinterpret_cast<void*>(GetProcAddress(hDbg, "SymLoadModuleExW")));
     if (!symLoad) return 0;
@@ -417,7 +755,7 @@ static inline DWORD GetOsBuildNumber() noexcept {
 
 static inline HANDLE Wh_FindFirstSymbol(
     HMODULE hModule,
-    const WH_FIND_SYMBOL_OPTIONS* /*options*/,
+    const WH_FIND_SYMBOL_OPTIONS* options,
     WH_FIND_SYMBOL* findData)
 {
     if (!hModule || !findData) return nullptr;
@@ -428,6 +766,12 @@ static inline HANDLE Wh_FindFirstSymbol(
     auto symEnum = reinterpret_cast<omnilynx_pdb::SymEnumSymbolsWFn>(
         reinterpret_cast<void*>(GetProcAddress(hDbg, "SymEnumSymbolsW")));
     if (!symEnum) return nullptr;
+
+    if (options && options->noUnmangle) {
+        auto symSetOpts = reinterpret_cast<omnilynx_pdb::SymSetOptionsFn>(
+            reinterpret_cast<void*>(GetProcAddress(hDbg, "SymSetOptions")));
+        if (symSetOpts) symSetOpts(SYMOPT_DEFERRED_LOADS);
+    }
 
     auto* state = static_cast<omnilynx_pdb::SymSearchState*>(calloc(1, sizeof(omnilynx_pdb::SymSearchState)));
     if (!state) return nullptr;
@@ -479,6 +823,18 @@ static inline BOOL Wh_FindNextSymbol(HANDLE symSearch, WH_FIND_SYMBOL* findData)
     return TRUE;
 }
 
+static inline HANDLE Wh_FindFirstSymbol2(
+    HMODULE hModule,
+    const WH_FIND_SYMBOL_OPTIONS* options,
+    WH_FIND_SYMBOL* findData)
+{
+    return Wh_FindFirstSymbol(hModule, options, findData);
+}
+
+static inline BOOL Wh_FindNextSymbol2(HANDLE symSearch, WH_FIND_SYMBOL* findData) {
+    return Wh_FindNextSymbol(symSearch, findData);
+}
+
 static inline void Wh_FindCloseSymbol(HANDLE symSearch) {
     if (!symSearch) return;
     auto* state = reinterpret_cast<omnilynx_pdb::SymSearchState*>(symSearch);
@@ -506,7 +862,6 @@ static inline bool Wh_HookSymbols(
     bool useCache = !(options && options->noCache);
     size_t resolvedCount = 0;
 
-    // 1. Fast path: check OS-build RVA cache first (0ms network delay)
     std::vector<void*> resolvedAddrs(symbolHooksCount, nullptr);
     if (useCache) {
         for (size_t i = 0; i < symbolHooksCount; ++i) {
@@ -525,8 +880,10 @@ static inline bool Wh_HookSymbols(
         }
     }
 
-    // 2. If any non-cached symbols remain, enumerate via DbgHelp
     if (resolvedCount < symbolHooksCount) {
+        if (options && options->symbolServer) {
+            omnilynx_pdb::EnsureSymInitialized(options->symbolServer);
+        }
         WH_FIND_SYMBOL sym{};
         HANDLE hSearch = Wh_FindFirstSymbol(module, nullptr, &sym);
         if (hSearch) {
@@ -556,7 +913,6 @@ static inline bool Wh_HookSymbols(
         }
     }
 
-    // 3. Apply hooks via MinHook
     Omnilynx_TraceLog("Wh_HookSymbols module=%ls resolved=%zu/%zu", baseName, resolvedCount, symbolHooksCount);
     bool allRequiredOk = true;
     for (size_t i = 0; i < symbolHooksCount; ++i) {
@@ -582,7 +938,9 @@ static inline bool Wh_HookSymbols(
 }
 #endif
 
-// Standard DllMain entry point for Omnilynx mods (initializes outside OS Loader Lock, race-free unload)
+// ============================================================================
+// Standard DllMain Entry Point (initializes outside OS Loader Lock)
+// ============================================================================
 #ifndef WENDO_NO_DLLMAIN
 static HANDLE g_omnilynxInitThread = nullptr;
 static volatile LONG g_omnilynxUnloading = 0;
@@ -596,13 +954,16 @@ static DWORD WINAPI OmnilynxInitThreadProc(LPVOID) {
 #ifdef __GNUC__
         if (Wh_ModBeforeInit) {
             Omnilynx_TraceLog("Calling Wh_ModBeforeInit()");
-            Wh_ModBeforeInit();
+            if (!Wh_ModBeforeInit()) {
+                Omnilynx_TraceLog("Wh_ModBeforeInit() returned FALSE, aborting init");
+                return 0;
+            }
         }
 #endif
         BOOL initOk = Wh_ModInit();
         Omnilynx_TraceLog("Wh_ModInit() returned %d", static_cast<int>(initOk));
         if (initOk) {
-            bool hooksOk = Wh_ApplyHookOperations();
+            BOOL hooksOk = Wh_ApplyHookOperations();
             Omnilynx_TraceLog("Wh_ApplyHookOperations() returned %d", hooksOk ? 1 : 0);
 #ifdef __GNUC__
             if (Wh_ModAfterInit) {
@@ -640,6 +1001,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 CloseHandle(g_omnilynxInitThread);
                 g_omnilynxInitThread = nullptr;
             }
+#ifdef __GNUC__
+            if (Wh_ModBeforeUninit) Wh_ModBeforeUninit();
+#endif
             Wh_RemoveAllHooks();
 #ifdef __GNUC__
             if (Wh_ModUninit) Wh_ModUninit();

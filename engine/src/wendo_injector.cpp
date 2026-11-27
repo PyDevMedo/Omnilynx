@@ -536,13 +536,43 @@ int CmdEject(const wchar_t* target, const wchar_t* dllName) {
             pid));
         if (!hProcess) continue;
 
-        ScopedHandle hThread(CreateRemoteThread(
-            hProcess.get(), nullptr, 0, freeLibAddr, reinterpret_cast<LPVOID>(foundMod), 0, nullptr));
-        if (hThread && WaitForSingleObject(hThread.get(), 10000) == WAIT_OBJECT_0) {
-            DWORD exitCode = 0;
-            if (GetExitCodeThread(hThread.get(), &exitCode) && exitCode != 0) {
-                ejectedCount++;
+        bool thisEjected = false;
+        HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtdll) {
+            auto pfnNtCreateThreadEx = reinterpret_cast<PFN_NtCreateThreadEx>(
+                reinterpret_cast<void*>(GetProcAddress(hNtdll, "NtCreateThreadEx")));
+            if (pfnNtCreateThreadEx) {
+                HANDLE hThread = nullptr;
+                NTSTATUS status = pfnNtCreateThreadEx(
+                    &hThread, THREAD_ALL_ACCESS, nullptr, hProcess.get(),
+                    freeLibAddr, reinterpret_cast<LPVOID>(foundMod), 0, 0, 0, 0, nullptr);
+                if (status == 0 && hThread) {
+                    WaitForSingleObject(hThread, 10000);
+                    DWORD exitCode = 0;
+                    GetExitCodeThread(hThread, &exitCode);
+                    CloseHandle(hThread);
+                    if (exitCode != 0 || FindLoadedModule(pid, dllName) == nullptr) {
+                        thisEjected = true;
+                    }
+                } else if (hThread) {
+                    CloseHandle(hThread);
+                }
             }
+        }
+
+        if (!thisEjected) {
+            ScopedHandle hThread(CreateRemoteThread(
+                hProcess.get(), nullptr, 0, freeLibAddr, reinterpret_cast<LPVOID>(foundMod), 0, nullptr));
+            if (hThread && WaitForSingleObject(hThread.get(), 10000) == WAIT_OBJECT_0) {
+                DWORD exitCode = 0;
+                if (GetExitCodeThread(hThread.get(), &exitCode) && (exitCode != 0 || FindLoadedModule(pid, dllName) == nullptr)) {
+                    thisEjected = true;
+                }
+            }
+        }
+
+        if (thisEjected) {
+            ejectedCount++;
         }
     }
 
