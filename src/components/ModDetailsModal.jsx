@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { marked } from 'marked';
 import {
   X,
@@ -193,6 +193,11 @@ export default function ModDetailsModal({
     );
   };
 
+  const modalRef = useRef(null);
+  useEffect(() => {
+    modalRef.current?.focus({ preventScroll: true });
+  }, []);
+
   return (
     <div
       style={{
@@ -203,20 +208,25 @@ export default function ModDetailsModal({
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 50,
-        padding: 24
+        zIndex: 100,
+        padding: 24,
+        WebkitAppRegion: 'no-drag',
+        pointerEvents: 'auto'
       }}
     >
       <div
-        className="glass-card"
+        className="modal-card"
+        tabIndex={-1}
+        ref={modalRef}
         style={{
           width: '100%',
           maxWidth: 840,
+          height: '86vh',
           maxHeight: '88vh',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
-          background: '#101521'
+          outline: 'none'
         }}
       >
         <div
@@ -292,7 +302,7 @@ export default function ModDetailsModal({
           </button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: 22 }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: 22 }}>
           {tab === 'settings' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {mod.parsed.settingsSchema.length === 0 ? (

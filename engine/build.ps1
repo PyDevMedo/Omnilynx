@@ -5,11 +5,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Clang = Join-Path $PSScriptRoot 'compiler\bin\clang++.exe'
+$Windres = Join-Path $PSScriptRoot 'compiler\bin\llvm-windres.exe'
 $Objdump = Join-Path $PSScriptRoot 'compiler\bin\llvm-objdump.exe'
 $IncludeDir = Join-Path $PSScriptRoot 'include'
 $LibDir = Join-Path $PSScriptRoot 'lib'
 $OutExe = Join-Path $PSScriptRoot 'bin\wendo_injector.exe'
 $SrcExe = Join-Path $PSScriptRoot 'src\wendo_injector.cpp'
+$RcFile = Join-Path $PSScriptRoot 'src\resource.rc'
+$ResObj = Join-Path $env:TEMP 'omnilynx_res.o'
 $ModsCompiled = Join-Path $env:TEMP 'omnilynx_mod_verify'
 
 if (-not (Test-Path $Clang)) {
@@ -18,6 +21,8 @@ if (-not (Test-Path $Clang)) {
 
 if (-not $VerifyOnly) {
     Write-Host "[1/3] Building wendo_injector.exe (Release x64, static, -Wall -Wextra -Wpedantic -Werror)..."
+    & $Windres $RcFile -O coff -o $ResObj
+    if ($LASTEXITCODE -ne 0) { throw "resource.rc compile failed" }
     & $Clang `
         --target=x86_64-w64-windows-gnu `
         -std=c++20 `
@@ -26,7 +31,7 @@ if (-not $VerifyOnly) {
         -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00 -DUNICODE -D_UNICODE `
         -municode -static -static-libgcc -static-libstdc++ `
         "-I$IncludeDir" `
-        $SrcExe `
+        $SrcExe $ResObj `
         -o $OutExe `
         -lkernel32 -luser32 -lshell32 -ldwmapi -lpsapi -lole32 -luuid -lwinhttp -lbcrypt -ladvapi32
     if ($LASTEXITCODE -ne 0) { throw "wendo_injector.exe build failed" }

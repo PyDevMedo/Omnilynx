@@ -248,20 +248,6 @@ function writeSettingsIni(state, latestSettings = null) {
 }
 
 async function compileModInternal(modId, code, compilerOptions = '') {
-  if (
-    !code.includes('wendo_mod.h') &&
-    (code.includes('winrt/') ||
-      code.includes('Wh_FindFirstSymbol') ||
-      code.includes('Wh_HookSymbols') ||
-      code.includes('HookSymbols('))
-  ) {
-    return {
-      ok: false,
-      stderr:
-        'هذا المود يتطلب رموز PDB الداخلية (Wh_FindFirstSymbol / HookSymbols) أو C++ WinRT ولا يمكن تشغيله بشكل مستقل بدونها.'
-    };
-  }
-
   const compiler = findCompiler();
   if (!compiler) {
     return {
@@ -286,10 +272,30 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     .split(/\s+/)
     .filter((f) => f && f.startsWith('-'));
 
+  // Auto-detect Windows SDK cppwinrt include path if installed on the system
+  const winrtIncludeFlags = [];
+  const kitsBase = 'C:\\Program Files (x86)\\Windows Kits\\10\\Include';
+  if (fs.existsSync(kitsBase)) {
+    try {
+      const vers = fs.readdirSync(kitsBase).filter((d) => /^\d+\./.test(d)).sort().reverse();
+      for (const v of vers) {
+        const cppwinrt = path.join(kitsBase, v, 'cppwinrt');
+        if (fs.existsSync(cppwinrt)) {
+          winrtIncludeFlags.push(`-I${cppwinrt}`);
+          break;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   const escapedIni = SETTINGS_INI.replace(/\\/g, '\\\\');
   const args = [
     '--target=x86_64-w64-windows-gnu',
     '-std=c++20',
+    '-fcoroutines',
+    '-fexceptions',
     '-D_WIN32_WINNT=0x0A00',
     '-DWINVER=0x0A00',
     '-DUNICODE',
@@ -302,6 +308,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     '-static-libstdc++',
     '-O2',
     `-I${ENGINE_INCLUDE}`,
+    ...winrtIncludeFlags,
     ...(needsSdkAutoInclude ? ['-include', path.join(ENGINE_INCLUDE, 'omnilynx_mod_sdk.hpp')] : []),
     srcPath,
     '-o',
@@ -312,6 +319,8 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     '-lgdi32',
     '-ldwmapi',
     '-lshell32',
+    '-lole32',
+    '-ldbghelp',
     ...extraFlags
   ];
 

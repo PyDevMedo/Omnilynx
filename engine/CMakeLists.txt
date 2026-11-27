@@ -27,6 +27,7 @@ endif()
 
 add_executable(wendo_injector
     src/wendo_injector.cpp
+    src/resource.rc
 )
 
 target_include_directories(wendo_injector PRIVATE

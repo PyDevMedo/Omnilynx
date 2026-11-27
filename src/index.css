@@ -140,10 +140,18 @@ code, pre, .font-mono {
   transition: border-color 0.22s ease, transform 0.18s ease, box-shadow 0.22s ease, background 0.22s ease;
 }
 
-.glass-card:hover {
+.mod-grid .glass-card:hover {
   background: var(--bg-surface-hover);
   border-color: var(--border-hover);
   transform: translateY(-2px);
+}
+
+.modal-card {
+  background: #101521;
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 .glass-card.is-on {
