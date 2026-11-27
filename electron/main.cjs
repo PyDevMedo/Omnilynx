@@ -290,11 +290,12 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     }
   }
 
+  const hasCustomDllMain = /\bDllMain\s*\(/.test(code);
+
   const escapedIni = SETTINGS_INI.replace(/\\/g, '\\\\');
   const args = [
     '--target=x86_64-w64-windows-gnu',
     '-std=c++20',
-    '-fcoroutines',
     '-fexceptions',
     '-D_WIN32_WINNT=0x0A00',
     '-DWINVER=0x0A00',
@@ -302,6 +303,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     '-D_UNICODE',
     `-DWH_MOD_ID=L"${safeId}"`,
     `-DWENDO_SETTINGS_INI=L"${escapedIni}"`,
+    ...(hasCustomDllMain ? ['-DWENDO_NO_DLLMAIN'] : []),
     '-shared',
     '-static',
     '-static-libgcc',
@@ -319,7 +321,14 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     '-lgdi32',
     '-ldwmapi',
     '-lshell32',
+    '-lcomctl32',
+    '-lshlwapi',
+    '-luxtheme',
     '-lole32',
+    '-loleaut32',
+    '-ladvapi32',
+    '-lpsapi',
+    '-lversion',
     '-ldbghelp',
     ...extraFlags
   ];
