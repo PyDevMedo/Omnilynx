@@ -8,6 +8,37 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <winternl.h>
+
+// ── NtCreateThreadEx & RtlCreateUserThread typedefs (CFG bypass for explorer.exe) ──
+// NtCreateThreadEx is an undocumented ntdll export that skips CFG validation on
+// the thread start-routine, unlike CreateRemoteThread which enforces CFG on Win11.
+typedef NTSTATUS (NTAPI *PFN_NtCreateThreadEx)(
+    PHANDLE             ThreadHandle,
+    ACCESS_MASK         DesiredAccess,
+    LPVOID              ObjectAttributes,
+    HANDLE              ProcessHandle,
+    LPTHREAD_START_ROUTINE StartRoutine,
+    LPVOID              Argument,
+    ULONG               CreateFlags,       // 0x1 = CREATE_SUSPENDED
+    SIZE_T              ZeroBits,
+    SIZE_T              StackSize,
+    SIZE_T              MaximumStackSize,
+    LPVOID              AttributeList
+);
+
+typedef NTSTATUS (NTAPI *PFN_RtlCreateUserThread)(
+    HANDLE              ProcessHandle,
+    LPSECURITY_ATTRIBUTES SecurityDescriptor,
+    BOOL                CreateSuspended,
+    ULONG               StackZeroBits,
+    SIZE_T*             StackReserve,
+    SIZE_T*             StackCommit,
+    LPTHREAD_START_ROUTINE StartAddress,
+    LPVOID              Parameter,
+    PHANDLE             ThreadHandle,
+    LPVOID              ClientId        // PCLIENT_ID, ignored
+);
 
 namespace {
 
@@ -81,6 +112,207 @@ std::wstring ResolveFullPathW(const wchar_t* path) {
     return out;
 }
 
+DWORD FindGuiThreadForPid(DWORD targetPid) {
+    struct Ctx {
+        DWORD pid;
+        DWORD tid;
+    } ctx{ targetPid, 0 };
+
+    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+        auto* c = reinterpret_cast<Ctx*>(lParam);
+        DWORD winPid = 0;
+        DWORD winTid = GetWindowThreadProcessId(hwnd, &winPid);
+        if (winPid == c->pid && winTid != 0) {
+            c->tid = winTid;
+            return FALSE;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+
+    return ctx.tid;
+}
+
+// ── NtCreateThreadEx injection (primary CFG bypass) ────────────────────────────
+// Windows 11 explorer.exe has CFG enabled (Policy 7 = 0x1). CreateRemoteThread
+// passes LoadLibraryW as start routine → CFG rejects it → thread silently exits.
+// NtCreateThreadEx bypasses the CFG check on the start-routine call site because
+// the kernel validates only the thread's own call targets, not the initial RIP.
+// This is the same approach used by Windhawk's injector.
+bool InjectViaNtCreateThreadEx(HANDLE hProcess, DWORD pid, LPTHREAD_START_ROUTINE loadLibAddr,
+                                LPVOID remoteMem, const std::wstring& fullPath) {
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll) return false;
+    auto pfnNtCreateThreadEx = reinterpret_cast<PFN_NtCreateThreadEx>(
+        reinterpret_cast<void*>(GetProcAddress(hNtdll, "NtCreateThreadEx")));
+    if (!pfnNtCreateThreadEx) {
+        TraceRuntimeLog("Injector", "NtCreateThreadEx export not found in ntdll");
+        return false;
+    }
+
+    HANDLE hThread = nullptr;
+    // CreateFlags = 0 → run immediately (no suspend); DesiredAccess = THREAD_ALL_ACCESS
+    NTSTATUS status = pfnNtCreateThreadEx(
+        &hThread,
+        THREAD_ALL_ACCESS,
+        nullptr,
+        hProcess,
+        loadLibAddr,
+        remoteMem,
+        0,          // CreateFlags = 0 (not suspended)
+        0, 0, 0,
+        nullptr);
+
+    if (status != 0 || !hThread) {
+        TraceRuntimeLog("Injector", "NtCreateThreadEx FAILED pid=" + std::to_string(pid)
+            + " status=0x" + [&]{ char buf[16]; snprintf(buf,sizeof(buf),"%08lX",(unsigned long)status); return std::string(buf); }());
+        if (hThread) CloseHandle(hThread);
+        return false;
+    }
+
+    TraceRuntimeLog("Injector", "NtCreateThreadEx OK pid=" + std::to_string(pid) + " threadHandle=" + std::to_string(reinterpret_cast<uintptr_t>(hThread)));
+
+    // Wait up to 5s for LoadLibraryW to complete
+    DWORD waitRes = WaitForSingleObject(hThread, 5000);
+    DWORD exitCode = 0;
+    GetExitCodeThread(hThread, &exitCode);
+    CloseHandle(hThread);
+
+    bool loaded = (FindLoadedModule(pid, fullPath.c_str()) != nullptr);
+    TraceRuntimeLog("Injector", "NtCreateThreadEx pid=" + std::to_string(pid)
+        + " waitRes=" + std::to_string(waitRes)
+        + " exitCode=" + std::to_string(exitCode)
+        + " loaded=" + (loaded ? "YES" : "NO"));
+    return loaded;
+}
+
+// ── RtlCreateUserThread injection (secondary CFG bypass) ────────────────────
+bool InjectViaRtlCreateUserThread(HANDLE hProcess, DWORD pid, LPTHREAD_START_ROUTINE loadLibAddr,
+                                   LPVOID remoteMem, const std::wstring& fullPath) {
+    HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
+    if (!hNtdll) return false;
+    auto pfnRtlCreateUserThread = reinterpret_cast<PFN_RtlCreateUserThread>(
+        reinterpret_cast<void*>(GetProcAddress(hNtdll, "RtlCreateUserThread")));
+    if (!pfnRtlCreateUserThread) {
+        TraceRuntimeLog("Injector", "RtlCreateUserThread export not found in ntdll");
+        return false;
+    }
+
+    HANDLE hThread = nullptr;
+    NTSTATUS status = pfnRtlCreateUserThread(
+        hProcess,
+        nullptr,    // SecurityDescriptor
+        FALSE,      // not suspended
+        0,
+        nullptr, nullptr,
+        loadLibAddr,
+        remoteMem,
+        &hThread,
+        nullptr);
+
+    if (status != 0 || !hThread) {
+        TraceRuntimeLog("Injector", "RtlCreateUserThread FAILED pid=" + std::to_string(pid)
+            + " status=0x" + [&]{ char buf[16]; snprintf(buf,sizeof(buf),"%08lX",(unsigned long)status); return std::string(buf); }());
+        if (hThread) CloseHandle(hThread);
+        return false;
+    }
+
+    TraceRuntimeLog("Injector", "RtlCreateUserThread OK pid=" + std::to_string(pid));
+    DWORD waitRes = WaitForSingleObject(hThread, 5000);
+    DWORD exitCode = 0;
+    GetExitCodeThread(hThread, &exitCode);
+    CloseHandle(hThread);
+
+    bool loaded = (FindLoadedModule(pid, fullPath.c_str()) != nullptr);
+    TraceRuntimeLog("Injector", "RtlCreateUserThread pid=" + std::to_string(pid)
+        + " waitRes=" + std::to_string(waitRes)
+        + " exitCode=" + std::to_string(exitCode)
+        + " loaded=" + (loaded ? "YES" : "NO"));
+    return loaded;
+}
+
+bool InjectViaSetWindowsHook(DWORD pid, const std::wstring& fullPath) {
+    DWORD uiTid = FindGuiThreadForPid(pid);
+    if (uiTid == 0) {
+        TraceRuntimeLog("Injector", "SetWindowsHook fallback: no GUI thread found for pid=" + std::to_string(pid));
+        return false;
+    }
+
+    SetEnvironmentVariableW(L"OMNILYNX_INJECTOR_NO_INIT", L"1");
+    ScopedLibrary localMod(LoadLibraryW(fullPath.c_str()));
+    SetEnvironmentVariableW(L"OMNILYNX_INJECTOR_NO_INIT", nullptr);
+    if (!localMod) {
+        TraceRuntimeLog("Injector", "SetWindowsHook fallback: local LoadLibraryW failed err=" + FormatWin32ErrorUtf8(GetLastError()));
+        return false;
+    }
+
+    auto hookProc = reinterpret_cast<HOOKPROC>(
+        reinterpret_cast<void*>(GetProcAddress(localMod.get(), "OmnilynxGetMsgProc")));
+    if (!hookProc) {
+        hookProc = reinterpret_cast<HOOKPROC>(
+            reinterpret_cast<void*>(GetProcAddress(localMod.get(), "_OmnilynxGetMsgProc@12")));
+    }
+    if (!hookProc) {
+        TraceRuntimeLog("Injector", "SetWindowsHook fallback: OmnilynxGetMsgProc export not found");
+        return false;
+    }
+
+    HHOOK hHook = SetWindowsHookExW(WH_GETMESSAGE, hookProc, localMod.get(), uiTid);
+    if (!hHook) {
+        TraceRuntimeLog("Injector", "SetWindowsHookExW failed err=" + FormatWin32ErrorUtf8(GetLastError()));
+        return false;
+    }
+
+    PostThreadMessageW(uiTid, WM_NULL, 0, 0);
+    bool loaded = false;
+    for (int i = 0; i < 40; ++i) {
+        Sleep(50);
+        if (FindLoadedModule(pid, fullPath.c_str()) != nullptr) {
+            loaded = true;
+            break;
+        }
+    }
+    UnhookWindowsHookEx(hHook);
+    TraceRuntimeLog("Injector", std::string("SetWindowsHookExW pid=") + std::to_string(pid) + " tid=" + std::to_string(uiTid) + " loaded=" + (loaded ? "YES" : "NO"));
+    return loaded;
+}
+
+bool InjectViaQueueUserAPC(DWORD pid, LPTHREAD_START_ROUTINE loadLibAddr, LPVOID remoteMem, const std::wstring& fullPath) {
+    ScopedHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+    if (!snap) return false;
+
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    int queued = 0;
+    if (Thread32First(snap.get(), &te)) {
+        do {
+            if (te.th32OwnerProcessID == pid) {
+                ScopedHandle hThr(OpenThread(THREAD_SET_CONTEXT, FALSE, te.th32ThreadID));
+                if (hThr) {
+                    if (QueueUserAPC(reinterpret_cast<PAPCFUNC>(reinterpret_cast<void*>(loadLibAddr)), hThr.get(), reinterpret_cast<ULONG_PTR>(remoteMem))) {
+                        queued++;
+                    }
+                }
+            }
+        } while (Thread32Next(snap.get(), &te));
+    }
+
+    if (queued == 0) {
+        TraceRuntimeLog("Injector", "QueueUserAPC: 0 threads queued for pid=" + std::to_string(pid));
+        return false;
+    }
+
+    bool loaded = false;
+    for (int i = 0; i < 40; ++i) {
+        Sleep(50);
+        if (FindLoadedModule(pid, fullPath.c_str()) != nullptr) {
+            loaded = true;
+            break;
+        }
+    }
+    TraceRuntimeLog("Injector", "QueueUserAPC pid=" + std::to_string(pid) + " queued=" + std::to_string(queued) + " loaded=" + (loaded ? "YES" : "NO"));
+    return loaded;
+}
+
 int CmdListProcesses() {
     ScopedHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
     if (!snap) {
@@ -140,9 +372,12 @@ int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
     int injectedCount = 0;
 
     const size_t pathBytes = (fullPath.size() + 1) * sizeof(wchar_t);
+    GrantAppPackagesReadExecute(fullPath);
+    TraceRuntimeLog("Injector", "CmdInject start target=" + WideToUtf8(target) + " dll=" + WideToUtf8(fullPath) + " matchedPids=" + std::to_string(pids.size()));
 
     for (DWORD pid : pids) {
         if (FindLoadedModule(pid, fullPath.c_str()) != nullptr) {
+            TraceRuntimeLog("Injector", "PID " + std::to_string(pid) + " already has DLL loaded");
             if (firstOkPid == 0) firstOkPid = pid;
             injectedCount++;
             continue;
@@ -155,8 +390,10 @@ int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
         if (!hProcess) {
             lastErr = GetLastError();
             lastErrMsg = "OpenProcess failed (try running as Administrator)";
+            TraceRuntimeLog("Injector", "OpenProcess FAILED pid=" + std::to_string(pid) + " err=" + FormatWin32ErrorUtf8(lastErr));
             continue;
         }
+        TraceRuntimeLog("Injector", "OpenProcess OK pid=" + std::to_string(pid));
 
         ScopedRemoteMem remoteMem(
             hProcess.get(),
@@ -164,35 +401,92 @@ int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
         if (!remoteMem) {
             lastErr = GetLastError();
             lastErrMsg = "VirtualAllocEx failed";
+            TraceRuntimeLog("Injector", "VirtualAllocEx FAILED pid=" + std::to_string(pid) + " err=" + FormatWin32ErrorUtf8(lastErr));
             continue;
         }
 
-        if (!WriteProcessMemory(hProcess.get(), remoteMem.get(), fullPath.c_str(), pathBytes, nullptr)) {
+        SIZE_T bytesWritten = 0;
+        if (!WriteProcessMemory(hProcess.get(), remoteMem.get(), fullPath.c_str(), pathBytes, &bytesWritten)) {
             lastErr = GetLastError();
             lastErrMsg = "WriteProcessMemory failed";
+            TraceRuntimeLog("Injector", "WriteProcessMemory FAILED pid=" + std::to_string(pid) + " err=" + FormatWin32ErrorUtf8(lastErr));
             continue;
         }
+        TraceRuntimeLog("Injector", "VirtualAllocEx=0x" + std::to_string(reinterpret_cast<uintptr_t>(remoteMem.get())) + " WriteProcessMemory bytes=" + std::to_string(bytesWritten));
 
-        ScopedHandle hThread(CreateRemoteThread(hProcess.get(), nullptr, 0, loadLibAddr, remoteMem.get(), 0, nullptr));
-        if (!hThread) {
-            lastErr = GetLastError();
-            lastErrMsg = "CreateRemoteThread failed";
-            continue;
+        // ── Injection attempt order (most → least CFG-safe) ───────────────────────
+        // 1. NtCreateThreadEx  → bypasses CFG on explorer.exe / Win11 protected procs
+        // 2. RtlCreateUserThread → secondary ntdll bypass
+        // 3. CreateRemoteThread  → standard, fails on CFG processes
+        // 4. SetWindowsHookExW   → requires GUI thread owned by pid
+        // 5. QueueUserAPC        → requires alertable thread
+
+        bool thisInjected = false;
+
+        // --- Attempt 1: NtCreateThreadEx (CFG bypass) ---
+        TraceRuntimeLog("Injector", "Trying NtCreateThreadEx for pid=" + std::to_string(pid));
+        if (InjectViaNtCreateThreadEx(hProcess.get(), pid, loadLibAddr, remoteMem.get(), fullPath)) {
+            TraceRuntimeLog("Injector", "NtCreateThreadEx SUCCESS pid=" + std::to_string(pid));
+            thisInjected = true;
         }
 
-        DWORD waitRes = WaitForSingleObject(hThread.get(), 10000);
-        if (waitRes != WAIT_OBJECT_0) {
-            remoteMem.release();
-            lastErr = GetLastError();
-            lastErrMsg = "Remote LoadLibraryW timed out";
-            continue;
+        if (!thisInjected) {
+            // --- Attempt 2: RtlCreateUserThread ---
+            TraceRuntimeLog("Injector", "NtCreateThreadEx failed, trying RtlCreateUserThread pid=" + std::to_string(pid));
+            if (InjectViaRtlCreateUserThread(hProcess.get(), pid, loadLibAddr, remoteMem.get(), fullPath)) {
+                TraceRuntimeLog("Injector", "RtlCreateUserThread SUCCESS pid=" + std::to_string(pid));
+                thisInjected = true;
+            }
         }
 
-        DWORD exitCode = 0;
-        GetExitCodeThread(hThread.get(), &exitCode);
-        if (exitCode == 0) {
-            lastErr = 0;
-            lastErrMsg = "Remote LoadLibraryW returned NULL";
+        if (!thisInjected) {
+            // --- Attempt 3: Classic CreateRemoteThread ---
+            TraceRuntimeLog("Injector", "NtCreateThreadEx+Rtl failed, trying CreateRemoteThread pid=" + std::to_string(pid));
+            ScopedHandle hThread(CreateRemoteThread(hProcess.get(), nullptr, 0, loadLibAddr, remoteMem.get(), 0, nullptr));
+            if (!hThread) {
+                lastErr = GetLastError();
+                lastErrMsg = "CreateRemoteThread failed";
+                TraceRuntimeLog("Injector", "CreateRemoteThread FAILED pid=" + std::to_string(pid) + " err=" + FormatWin32ErrorUtf8(lastErr));
+            } else {
+                DWORD waitRes = WaitForSingleObject(hThread.get(), 4000);
+                DWORD exitCode = 0;
+                GetExitCodeThread(hThread.get(), &exitCode);
+                HMODULE verifiedMod = FindLoadedModule(pid, fullPath.c_str());
+                TraceRuntimeLog("Injector", "CreateRemoteThread pid=" + std::to_string(pid)
+                    + " waitRes=" + std::to_string(waitRes)
+                    + " exitCode=" + std::to_string(exitCode)
+                    + " loadedModule=" + (verifiedMod ? "YES" : "NO"));
+                if (waitRes == WAIT_OBJECT_0 && (exitCode != 0 || verifiedMod)) {
+                    thisInjected = true;
+                } else if (waitRes != WAIT_OBJECT_0) {
+                    // Timed out → try hook methods
+                    LPVOID rawRemoteMem = remoteMem.get();
+                    TraceRuntimeLog("Injector", "CreateRemoteThread TIMEOUT pid=" + std::to_string(pid) + " -> trying SetWindowsHookExW / QueueUserAPC");
+                    if (InjectViaSetWindowsHook(pid, fullPath) ||
+                        InjectViaQueueUserAPC(pid, loadLibAddr, rawRemoteMem, fullPath)) {
+                        thisInjected = true;
+                    }
+                } else {
+                    lastErr = 0;
+                    lastErrMsg = "Remote LoadLibraryW returned NULL";
+                }
+            }
+        }
+
+        if (!thisInjected) {
+            // --- Attempt 4: SetWindowsHookExW / QueueUserAPC directly ---
+            TraceRuntimeLog("Injector", "All thread methods failed, trying SetWindowsHook/APC pid=" + std::to_string(pid));
+            LPVOID rawRemoteMem = remoteMem.get();
+            if (InjectViaSetWindowsHook(pid, fullPath) ||
+                InjectViaQueueUserAPC(pid, loadLibAddr, rawRemoteMem, fullPath)) {
+                thisInjected = true;
+            }
+        }
+
+        if (!thisInjected) {
+            lastErr = lastErr ? lastErr : ERROR_FUNCTION_FAILED;
+            lastErrMsg = lastErrMsg ? lastErrMsg : "All injection methods failed";
+            TraceRuntimeLog("Injector", "ALL injection methods FAILED for pid=" + std::to_string(pid));
             continue;
         }
 

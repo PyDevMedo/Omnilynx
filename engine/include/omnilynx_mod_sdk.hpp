@@ -44,7 +44,58 @@
 extern "C" {
 #endif
 
-// Logging helper (writes to OutputDebugStringW)
+__declspec(dllexport) inline LRESULT CALLBACK OmnilynxGetMsgProc(int code, WPARAM wParam, LPARAM lParam) {
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+// Flushed runtime trace logger inside target process (%LOCALAPPDATA%\Omnilynx\runtime_trace.log)
+static inline void Omnilynx_TraceLog(const char* fmt, ...) {
+    wchar_t dir[1024] = {};
+    DWORD n = ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Omnilynx", dir, 1024);
+    if (n == 0 || n >= 1024) return;
+    CreateDirectoryW(dir, nullptr);
+
+    wchar_t logPath[1088] = {};
+    _snwprintf_s(logPath, 1088, _TRUNCATE, L"%s\\runtime_trace.log", dir);
+
+    HANDLE hFile = CreateFileW(
+        logPath,
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return;
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    char buf[1536] = {};
+    int off = snprintf(
+        buf, sizeof(buf),
+        "[%04u-%02u-%02u %02u:%02u:%02u.%03u][PID:%lu][ModDLL] ",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        static_cast<unsigned long>(GetCurrentProcessId()));
+
+    if (off > 0 && static_cast<size_t>(off) < sizeof(buf) - 4) {
+        va_list args;
+        va_start(args, fmt);
+        int msgLen = vsnprintf(buf + off, sizeof(buf) - static_cast<size_t>(off) - 3, fmt, args);
+        va_end(args);
+        if (msgLen > 0) off += msgLen;
+    }
+    if (static_cast<size_t>(off) < sizeof(buf) - 2) {
+        buf[off++] = '\r';
+        buf[off++] = '\n';
+    }
+
+    DWORD written = 0;
+    WriteFile(hFile, buf, static_cast<DWORD>(off), &written, nullptr);
+    FlushFileBuffers(hFile);
+    CloseHandle(hFile);
+}
+
+// Logging helper (writes to OutputDebugStringW + runtime_trace.log)
 static inline void Wh_Log(const wchar_t* format, ...) {
     if (!format) return;
     wchar_t buffer[1024];
@@ -55,6 +106,7 @@ static inline void Wh_Log(const wchar_t* format, ...) {
     OutputDebugStringW(L"[OmnilynxMod] ");
     OutputDebugStringW(buffer);
     OutputDebugStringW(L"\n");
+    Omnilynx_TraceLog("Wh_Log: %ls", buffer);
 }
 
 static volatile LONG g_omnilynxMhInit = 0;
@@ -65,21 +117,27 @@ static inline bool Wh_SetFunctionHook(
     void** originalFunction
 ) {
     if (!targetFunction || !hookFunction) {
+        Omnilynx_TraceLog("Wh_SetFunctionHook INVALID args target=%p hook=%p", targetFunction, hookFunction);
         return false;
     }
     if (InterlockedCompareExchange(&g_omnilynxMhInit, 1, 0) == 0) {
-        if (MH_Initialize() != MH_OK) {
+        MH_STATUS initSt = MH_Initialize();
+        Omnilynx_TraceLog("MH_Initialize() -> %d", static_cast<int>(initSt));
+        if (initSt != MH_OK && initSt != MH_ERROR_ALREADY_INITIALIZED) {
             InterlockedExchange(&g_omnilynxMhInit, 0);
             return false;
         }
     }
     MH_STATUS st = MH_CreateHook(targetFunction, hookFunction, originalFunction);
+    Omnilynx_TraceLog("MH_CreateHook(target=%p, hook=%p) -> %d", targetFunction, hookFunction, static_cast<int>(st));
     return (st == MH_OK || st == MH_ERROR_ALREADY_CREATED);
 }
 
 static inline bool Wh_ApplyHookOperations(void) {
     if (InterlockedCompareExchange(&g_omnilynxMhInit, 1, 1) == 0) return true;
-    return MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
+    MH_STATUS st = MH_EnableHook(MH_ALL_HOOKS);
+    Omnilynx_TraceLog("MH_EnableHook(MH_ALL_HOOKS) -> %d", static_cast<int>(st));
+    return st == MH_OK;
 }
 
 static inline void Wh_RemoveAllHooks(void) {
@@ -499,12 +557,16 @@ static inline bool Wh_HookSymbols(
     }
 
     // 3. Apply hooks via MinHook
+    Omnilynx_TraceLog("Wh_HookSymbols module=%ls resolved=%zu/%zu", baseName, resolvedCount, symbolHooksCount);
     bool allRequiredOk = true;
     for (size_t i = 0; i < symbolHooksCount; ++i) {
+        const wchar_t* symName = (symbolHooks[i].symbols && symbolHooks[i].symbolsCount > 0) ? symbolHooks[i].symbols[0] : L"(unknown)";
         if (!resolvedAddrs[i]) {
+            Omnilynx_TraceLog("  Symbol NOT FOUND: %ls (optional=%d)", symName, symbolHooks[i].optional ? 1 : 0);
             if (!symbolHooks[i].optional) allRequiredOk = false;
             continue;
         }
+        Omnilynx_TraceLog("  Symbol RESOLVED: %ls -> %p", symName, resolvedAddrs[i]);
         if (symbolHooks[i].hookFunction) {
             if (!Wh_SetFunctionHook(resolvedAddrs[i], symbolHooks[i].hookFunction, symbolHooks[i].pOriginalFunction)) {
                 if (!symbolHooks[i].optional) allRequiredOk = false;
@@ -526,14 +588,27 @@ static HANDLE g_omnilynxInitThread = nullptr;
 static volatile LONG g_omnilynxUnloading = 0;
 
 static DWORD WINAPI OmnilynxInitThreadProc(LPVOID) {
+    wchar_t exePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    Omnilynx_TraceLog("OmnilynxInitThreadProc started in host=%ls", exePath);
+
     if (InterlockedCompareExchange(&g_omnilynxUnloading, 0, 0) == 0) {
 #ifdef __GNUC__
-        if (Wh_ModBeforeInit) Wh_ModBeforeInit();
+        if (Wh_ModBeforeInit) {
+            Omnilynx_TraceLog("Calling Wh_ModBeforeInit()");
+            Wh_ModBeforeInit();
+        }
 #endif
-        if (Wh_ModInit()) {
-            Wh_ApplyHookOperations();
+        BOOL initOk = Wh_ModInit();
+        Omnilynx_TraceLog("Wh_ModInit() returned %d", static_cast<int>(initOk));
+        if (initOk) {
+            bool hooksOk = Wh_ApplyHookOperations();
+            Omnilynx_TraceLog("Wh_ApplyHookOperations() returned %d", hooksOk ? 1 : 0);
 #ifdef __GNUC__
-            if (Wh_ModAfterInit) Wh_ModAfterInit();
+            if (Wh_ModAfterInit) {
+                Omnilynx_TraceLog("Calling Wh_ModAfterInit()");
+                Wh_ModAfterInit();
+            }
 #endif
         }
     }
@@ -544,8 +619,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {
             DisableThreadLibraryCalls(hModule);
+            wchar_t skipBuf[8] = {};
+            if (GetEnvironmentVariableW(L"OMNILYNX_INJECTOR_NO_INIT", skipBuf, 8) > 0 && skipBuf[0] == L'1') {
+                break;
+            }
+            Omnilynx_TraceLog("DLL_PROCESS_ATTACH mod=%ls", WH_MOD_ID);
             InterlockedExchange(&g_omnilynxUnloading, 0);
             g_omnilynxInitThread = CreateThread(nullptr, 0, OmnilynxInitThreadProc, nullptr, 0, nullptr);
+            if (!g_omnilynxInitThread) {
+                Omnilynx_TraceLog("CreateThread(OmnilynxInitThreadProc) FAILED err=%lu", static_cast<unsigned long>(GetLastError()));
+            }
             break;
         }
         case DLL_PROCESS_DETACH: {

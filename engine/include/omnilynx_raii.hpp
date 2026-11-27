@@ -16,6 +16,8 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <knownfolders.h>
+#include <aclapi.h>
+#include <sddl.h>
 #include <bcrypt.h>
 #include <winhttp.h>
 #include <string>
@@ -437,6 +439,64 @@ inline void AppendErrorLog(const std::string& context, DWORD win32Err, const std
 
     DWORD written = 0;
     WriteFile(hFile.get(), line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    FlushFileBuffers(hFile.get());
+}
+
+// Flushed runtime diagnostic trace log (%LOCALAPPDATA%\Omnilynx\runtime_trace.log)
+inline void TraceRuntimeLog(const char* component, const std::string& message) {
+    std::wstring logPath = GetLocalAppDataOmnilynxDir() + L"\\runtime_trace.log";
+    ScopedHandle hFile(CreateFileW(
+        logPath.c_str(),
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr));
+    if (!hFile) return;
+
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+    char prefix[128];
+    snprintf(prefix, sizeof(prefix), "[%04u-%02u-%02u %02u:%02u:%02u.%03u][PID:%lu][%s] ",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+             static_cast<unsigned long>(GetCurrentProcessId()),
+             component ? component : "Engine");
+
+    std::string line = std::string(prefix) + message + "\r\n";
+    DWORD written = 0;
+    WriteFile(hFile.get(), line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    FlushFileBuffers(hFile.get());
+}
+
+// Grant ALL APPLICATION PACKAGES (S-1-15-2-1) Read & Execute ACL on DLL so UWP/Modern Explorer can load it
+inline void GrantAppPackagesReadExecute(const std::wstring& filePath) {
+    PSID appPkgSid = nullptr;
+    if (!ConvertStringSidToSidW(L"S-1-15-2-1", &appPkgSid)) return;
+
+    PACL oldDacl = nullptr;
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    if (GetNamedSecurityInfoW(
+            filePath.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            nullptr, nullptr, &oldDacl, nullptr, &sd) == ERROR_SUCCESS) {
+        EXPLICIT_ACCESSW ea{};
+        ea.grfAccessPermissions = GENERIC_READ | GENERIC_EXECUTE;
+        ea.grfAccessMode = GRANT_ACCESS;
+        ea.grfInheritance = NO_INHERITANCE;
+        ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(appPkgSid);
+
+        PACL newDacl = nullptr;
+        if (SetEntriesInAclW(1, &ea, oldDacl, &newDacl) == ERROR_SUCCESS && newDacl) {
+            SetNamedSecurityInfoW(
+                const_cast<LPWSTR>(filePath.c_str()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                nullptr, nullptr, newDacl, nullptr);
+            LocalFree(newDacl);
+        }
+        if (sd) LocalFree(sd);
+    }
+    LocalFree(appPkgSid);
 }
 
 } // namespace omnilynx
