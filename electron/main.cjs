@@ -264,20 +264,57 @@ function extractTargetRulesFromCode(code) {
   return { includes: ['explorer.exe'], excludes, hasWildcard: false, hasToolMod: false };
 }
 
+const runningToolMods = new Map();
+const modRulesCache = new Map();
+
+function getCachedModRules(modId, srcPath) {
+  try {
+    const mtime = fs.statSync(srcPath).mtimeMs;
+    const cached = modRulesCache.get(modId);
+    if (cached && cached.mtime === mtime) return cached.rules;
+    const code = fs.readFileSync(srcPath, 'utf8');
+    const rules = extractTargetRulesFromCode(code);
+    modRulesCache.set(modId, { mtime, rules });
+    return rules;
+  } catch {
+    return { includes: ['explorer.exe'], excludes: new Set(), hasWildcard: false, hasToolMod: false };
+  }
+}
+
 function startToolModHost(modId, dllPath) {
   if (!fs.existsSync(ENGINE_BIN) || !fs.existsSync(dllPath)) return false;
+  const existing = runningToolMods.get(modId);
+  if (existing && existing.exitCode === null && !existing.killed) {
+    return true;
+  }
   const child = spawn(ENGINE_BIN, ['-tool-mod', modId, dllPath], {
     windowsHide: true,
     detached: true,
     stdio: 'ignore'
+  });
+  runningToolMods.set(modId, child);
+  child.on('exit', () => {
+    if (runningToolMods.get(modId) === child) {
+      runningToolMods.delete(modId);
+    }
   });
   child.unref();
   return true;
 }
 
 async function stopToolModHost(modId) {
-  if (!fs.existsSync(ENGINE_BIN)) return;
-  await runExecFile(ENGINE_BIN, ['stop-tool', modId]);
+  if (fs.existsSync(ENGINE_BIN)) {
+    await runExecFile(ENGINE_BIN, ['stop-tool', modId]);
+  }
+  const existing = runningToolMods.get(modId);
+  if (existing) {
+    runningToolMods.delete(modId);
+    setTimeout(() => {
+      try {
+        if (existing.exitCode === null && !existing.killed) existing.kill();
+      } catch {}
+    }, 600);
+  }
 }
 
 function extractTargetsFromCode(code) {
@@ -289,27 +326,48 @@ function extractMetaField(code, key, fallback = '') {
   return m ? m[1].trim() : fallback;
 }
 
+function flattenSettingsInto(obj, prefix, out) {
+  if (obj === null || obj === undefined) return;
+  if (typeof obj !== 'object') {
+    out[prefix] = typeof obj === 'boolean' ? (obj ? 1 : 0) : obj;
+    return;
+  }
+  if (Array.isArray(obj)) {
+    if (prefix) out[prefix] = obj.length;
+    for (let i = 0; i < obj.length; i++) {
+      const item = obj[i];
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        for (const [k, v] of Object.entries(item)) {
+          if (k.startsWith('$')) continue;
+          flattenSettingsInto(v, `${prefix}[${i}].${k}`, out);
+          flattenSettingsInto(v, `${prefix}.${k}`, out);
+        }
+      } else {
+        flattenSettingsInto(item, `${prefix}[${i}]`, out);
+      }
+    }
+    return;
+  }
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.startsWith('$')) continue;
+    const nextKey = prefix ? `${prefix}.${k}` : k;
+    flattenSettingsInto(v, nextKey, out);
+  }
+}
+
 function writeSettingsIni(state, latestSettings = null) {
   const merged = {};
   for (const mData of Object.values(state.mods || {})) {
     if (mData?.settings && typeof mData.settings === 'object') {
-      for (const [k, v] of Object.entries(mData.settings)) {
-        if (v !== null && typeof v !== 'object') {
-          merged[k] = typeof v === 'boolean' ? (v ? 1 : 0) : v;
-        }
-      }
+      flattenSettingsInto(mData.settings, '', merged);
     }
   }
   if (latestSettings && typeof latestSettings === 'object') {
-    for (const [k, v] of Object.entries(latestSettings)) {
-      if (v !== null && typeof v !== 'object') {
-        merged[k] = typeof v === 'boolean' ? (v ? 1 : 0) : v;
-      }
-    }
+    flattenSettingsInto(latestSettings, '', merged);
   }
   const lines = ['[Settings]'];
   for (const [k, v] of Object.entries(merged)) {
-    lines.push(`${k}=${String(v)}`);
+    if (k) lines.push(`${k}=${String(v)}`);
   }
   fs.writeFileSync(SETTINGS_INI, '\ufeff' + lines.join('\r\n'), 'utf16le');
 }
@@ -1159,10 +1217,8 @@ app.whenReady().then(() => {
           if (!alivePids.has(pid)) seen.delete(pid);
         }
 
-        const code = fs.readFileSync(srcPath, 'utf8');
-        const { includes, excludes, hasToolMod } = extractTargetRulesFromCode(code);
+        const { includes, excludes, hasToolMod } = getCachedModRules(modId, srcPath);
         if (hasToolMod && !isExt) {
-          // Idempotent: CmdToolMod exits immediately if its named event already exists
           startToolModHost(modId, dllPath);
         }
         const targetSet = new Set(includes.map((t) => t.toLowerCase()));
@@ -1195,7 +1251,7 @@ app.whenReady().then(() => {
     } finally {
       watcherBusy = false;
     }
-  }, 2000);
+  }, 4000);
 });
 
 app.on('window-all-closed', () => {
