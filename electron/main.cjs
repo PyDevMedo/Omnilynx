@@ -25,6 +25,7 @@ function resolveDataDir() {
 const DATA_DIR = resolveDataDir();
 const ENGINE_BIN = path.join(RESOURCES_DIR, 'engine', 'bin', 'wendo_injector.exe');
 const ENGINE_INCLUDE = path.join(RESOURCES_DIR, 'engine', 'include');
+const ENGINE_LIB = path.join(RESOURCES_DIR, 'engine', 'lib');
 const BUNDLED_MODS_DIR = path.join(RESOURCES_DIR, 'installed_mods');
 
 // Dedicated Omnilynx folders inside the app's own directory
@@ -169,13 +170,19 @@ function runExecFile(exe, args) {
 
 function extractTargetsFromCode(code) {
   const targets = [];
+  let hasWildcard = false;
   const regex = /\/\/\s*@include\s+(.*)/g;
   let m;
   while ((m = regex.exec(code)) !== null) {
     const val = m[1].trim();
-    if (val && val !== '*') targets.push(val);
+    if (val === '*') hasWildcard = true;
+    else if (val) targets.push(val);
   }
-  return targets.length > 0 ? targets : ['notepad.exe'];
+  if (targets.length > 0) return targets;
+  if (hasWildcard) {
+    return ['explorer.exe', 'notepad.exe', 'chrome.exe', 'msedge.exe', 'WindowsTerminal.exe', 'Code.exe'];
+  }
+  return ['notepad.exe'];
 }
 
 function extractMetaField(code, key, fallback = '') {
@@ -265,6 +272,8 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     buildSrcPath,
     '-o',
     dllPath,
+    `-L${ENGINE_LIB}`,
+    '-lminhook',
     '-luser32',
     '-lgdi32',
     '-ldwmapi',
@@ -430,9 +439,12 @@ app.whenReady().then(() => {
 
     if (enabled) {
       writeSettingsIni(state);
+      const headerPath = path.join(ENGINE_INCLUDE, 'wendo_mod.h');
+      const dllMtime = fs.existsSync(dllPath) ? fs.statSync(dllPath).mtimeMs : 0;
       const needsCompile =
         !fs.existsSync(dllPath) ||
-        (fs.existsSync(srcPath) && fs.statSync(srcPath).mtimeMs > fs.statSync(dllPath).mtimeMs);
+        (fs.existsSync(srcPath) && fs.statSync(srcPath).mtimeMs > dllMtime) ||
+        (fs.existsSync(headerPath) && fs.statSync(headerPath).mtimeMs > dllMtime);
       if (needsCompile) {
         const comp = await compileModInternal(safeId, code, compilerOptions);
         if (!comp.ok) {
@@ -788,7 +800,8 @@ app.whenReady().then(() => {
 
   createWindow();
 
-  // Auto-inject enabled mods whenever their target process opens
+  // Lightweight auto-injector: only injects NEW target PIDs (zero repeated spawns / zero lag)
+  const injectedPidsByMod = new Map();
   let watcherBusy = false;
   setInterval(async () => {
     if (watcherBusy || !fs.existsSync(ENGINE_BIN)) return;
@@ -798,28 +811,48 @@ app.whenReady().then(() => {
       const enabledIds = Object.entries(state.mods || {})
         .filter(([, v]) => v && v.enabled)
         .map(([k]) => k);
-      if (enabledIds.length === 0) return;
+      if (enabledIds.length === 0) {
+        injectedPidsByMod.clear();
+        return;
+      }
 
       const listRes = await runExecFile(ENGINE_BIN, ['list']);
-      let runningNames = new Set();
+      let processes = [];
       try {
         const parsed = JSON.parse(listRes.stdout);
         if (parsed.ok && Array.isArray(parsed.processes)) {
-          runningNames = new Set(parsed.processes.map((p) => String(p.name || '').toLowerCase()));
+          processes = parsed.processes;
         }
       } catch {
         return;
       }
 
+      const alivePids = new Set(processes.map((p) => p.pid));
       for (const modId of enabledIds) {
         const dllPath = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
         const srcPath = findModSourceFile(modId);
         if (!srcPath || !fs.existsSync(dllPath)) continue;
+
+        let seen = injectedPidsByMod.get(modId);
+        if (!seen) {
+          seen = new Set();
+          injectedPidsByMod.set(modId, seen);
+        }
+        for (const pid of [...seen]) {
+          if (!alivePids.has(pid)) seen.delete(pid);
+        }
+
         const code = fs.readFileSync(srcPath, 'utf8');
-        const targets = extractTargetsFromCode(code);
-        for (const target of targets) {
-          if (runningNames.has(target.toLowerCase())) {
-            await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
+        const targetSet = new Set(extractTargetsFromCode(code).map((t) => t.toLowerCase()));
+        for (const proc of processes) {
+          if (proc.pid > 4 && targetSet.has(String(proc.name || '').toLowerCase()) && !seen.has(proc.pid)) {
+            const res = await runExecFile(ENGINE_BIN, ['inject', String(proc.pid), dllPath]);
+            try {
+              const p = JSON.parse(res.stdout);
+              if (p.ok) seen.add(proc.pid);
+            } catch {
+              // ignore
+            }
           }
         }
       }
@@ -828,7 +861,7 @@ app.whenReady().then(() => {
     } finally {
       watcherBusy = false;
     }
-  }, 3000);
+  }, 15000);
 });
 
 app.on('window-all-closed', () => {

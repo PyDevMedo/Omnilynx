@@ -9,121 +9,55 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include "MinHook.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Logging helper (writes to OutputDebugStringW and optional log file)
+// Logging helper (writes to OutputDebugStringW)
 static inline void Wh_Log(const wchar_t* format, ...) {
     wchar_t buffer[1024];
     va_list args;
     va_start(args, format);
     _vsnwprintf_s(buffer, 1024, _TRUNCATE, format, args);
     va_end(args);
-    OutputDebugStringW(L"[WendoMod] ");
+    OutputDebugStringW(L"[OmnilynxMod] ");
     OutputDebugStringW(buffer);
     OutputDebugStringW(L"\n");
 }
 
-// Lightweight inline x64/x86 hook entry
-struct WendoHookEntry {
-    void* targetFunction;
-    void* hookFunction;
-    void** originalTrampoline;
-    uint8_t originalBytes[16];
-    size_t patchSize;
-    bool active;
-};
-
-static WendoHookEntry g_wendoHooks[64];
-static int g_wendoHookCount = 0;
+static bool g_mhInitialized = false;
 
 static inline bool Wh_SetFunctionHook(
     void* targetFunction,
     void* hookFunction,
     void** originalFunction
 ) {
-    if (!targetFunction || !hookFunction || g_wendoHookCount >= 64) {
+    if (!targetFunction || !hookFunction) {
         return false;
     }
-
-    WendoHookEntry& entry = g_wendoHooks[g_wendoHookCount];
-    entry.targetFunction = targetFunction;
-    entry.hookFunction = hookFunction;
-    entry.originalTrampoline = originalFunction;
-    entry.active = false;
-
-#if defined(_M_X64) || defined(__x86_64__)
-    // 14-byte absolute jump: FF 25 00 00 00 00 [8-byte address]
-    entry.patchSize = 14;
-    memcpy(entry.originalBytes, targetFunction, entry.patchSize);
-
-    // Allocate executable trampoline: original 14 bytes + 14-byte jump back
-    uint8_t* trampoline = (uint8_t*)VirtualAlloc(
-        nullptr, 32, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE
-    );
-    if (!trampoline) return false;
-
-    memcpy(trampoline, entry.originalBytes, entry.patchSize);
-    uint8_t* jumpBack = trampoline + entry.patchSize;
-    jumpBack[0] = 0xFF;
-    jumpBack[1] = 0x25;
-    *(uint32_t*)(jumpBack + 2) = 0;
-    *(uint64_t*)(jumpBack + 6) = (uint64_t)((uint8_t*)targetFunction + entry.patchSize);
-
-    if (originalFunction) {
-        *originalFunction = (void*)trampoline;
+    if (!g_mhInitialized) {
+        if (MH_Initialize() != MH_OK) {
+            return false;
+        }
+        g_mhInitialized = true;
     }
-    g_wendoHookCount++;
-    return true;
-#else
-    return false;
-#endif
+    MH_STATUS st = MH_CreateHook(targetFunction, hookFunction, originalFunction);
+    return (st == MH_OK || st == MH_ERROR_ALREADY_CREATED);
 }
 
 static inline bool Wh_ApplyHookOperations(void) {
-    for (int i = 0; i < g_wendoHookCount; i++) {
-        WendoHookEntry& entry = g_wendoHooks[i];
-        if (entry.active) continue;
-
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(entry.targetFunction, entry.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            return false;
-        }
-
-        uint8_t patch[14];
-        patch[0] = 0xFF;
-        patch[1] = 0x25;
-        *(uint32_t*)(patch + 2) = 0;
-        *(uint64_t*)(patch + 6) = (uint64_t)entry.hookFunction;
-
-        memcpy(entry.targetFunction, patch, 14);
-        VirtualProtect(entry.targetFunction, entry.patchSize, oldProtect, &oldProtect);
-        FlushInstructionCache(GetCurrentProcess(), entry.targetFunction, 14);
-        entry.active = true;
-    }
-    return true;
+    if (!g_mhInitialized) return true;
+    return MH_EnableHook(MH_ALL_HOOKS) == MH_OK;
 }
 
 static inline void Wh_RemoveAllHooks(void) {
-    for (int i = 0; i < g_wendoHookCount; i++) {
-        WendoHookEntry& entry = g_wendoHooks[i];
-        if (!entry.active) continue;
-
-        DWORD oldProtect = 0;
-        if (VirtualProtect(entry.targetFunction, entry.patchSize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            memcpy(entry.targetFunction, entry.originalBytes, entry.patchSize);
-            VirtualProtect(entry.targetFunction, entry.patchSize, oldProtect, &oldProtect);
-            FlushInstructionCache(GetCurrentProcess(), entry.targetFunction, entry.patchSize);
-            entry.active = false;
-        }
-        if (entry.originalTrampoline && *entry.originalTrampoline) {
-            VirtualFree(*entry.originalTrampoline, 0, MEM_RELEASE);
-            *entry.originalTrampoline = nullptr;
-        }
+    if (g_mhInitialized) {
+        MH_DisableHook(MH_ALL_HOOKS);
+        MH_Uninitialize();
+        g_mhInitialized = false;
     }
-    g_wendoHookCount = 0;
 }
 
 // Settings helpers (reads from WENDO_SETTINGS_INI passed at compile time, or %LOCALAPPDATA%\Programs\Omnilynx\Config\mod_settings.ini)
@@ -222,17 +156,23 @@ void Wh_ModSettingsChanged(void);
 }
 #endif
 
-// Standard DllMain entry point for Wendo mods
+// Standard DllMain entry point for Omnilynx mods (initializes outside OS Loader Lock)
 #ifndef WENDO_NO_DLLMAIN
+static DWORD WINAPI WendoInitThreadProc(LPVOID) {
+    if (Wh_ModInit()) {
+        Wh_ApplyHookOperations();
+    }
+    return 0;
+}
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
-        case DLL_PROCESS_ATTACH:
+        case DLL_PROCESS_ATTACH: {
             DisableThreadLibraryCalls(hModule);
-            if (!Wh_ModInit()) {
-                return FALSE;
-            }
-            Wh_ApplyHookOperations();
+            HANDLE hThread = CreateThread(nullptr, 0, WendoInitThreadProc, nullptr, 0, nullptr);
+            if (hThread) CloseHandle(hThread);
             break;
+        }
         case DLL_PROCESS_DETACH:
             Wh_RemoveAllHooks();
             Wh_ModUninit();
