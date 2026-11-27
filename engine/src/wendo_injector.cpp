@@ -1,112 +1,135 @@
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <tlhelp32.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <wchar.h>
-#include <string.h>
+#include "omnilynx_raii.hpp"
+#include "omnilynx_hwprofile.hpp"
+#include "omnilynx_net.hpp"
 
-static void PrintJsonError(const char* msg, DWORD err) {
-    printf("{\"ok\":false,\"error\":\"%s\",\"win32Error\":%lu}\n", msg, (unsigned long)err);
+#include <tlhelp32.h>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+namespace {
+
+using namespace omnilynx;
+
+void PrintJsonError(const char* msg, DWORD err, const char* context = nullptr) {
+    if (context) {
+        AppendErrorLog(context, err, msg ? msg : "");
+    }
+    std::string logPath = WideToUtf8(GetLocalAppDataOmnilynxDir() + L"\\error.log");
+    printf("{\"ok\":false,\"error\":\"%s\",\"win32Error\":%lu,\"win32Message\":\"%s\",\"logPath\":\"%s\"}\n",
+           EscapeJsonUtf8(msg ? msg : "Unknown error").c_str(),
+           static_cast<unsigned long>(err),
+           EscapeJsonUtf8(FormatWin32ErrorUtf8(err)).c_str(),
+           EscapeJsonUtf8(logPath).c_str());
 }
 
-static int FindProcessesByNameOrPid(const wchar_t* target, DWORD* outPids, int maxPids) {
+std::vector<DWORD> FindProcessesByNameOrPid(const wchar_t* target) {
+    std::vector<DWORD> pids;
+    if (!target || *target == L'\0') return pids;
+
     wchar_t* endPtr = nullptr;
     unsigned long pidVal = wcstoul(target, &endPtr, 10);
     if (endPtr != target && *endPtr == L'\0' && pidVal > 0) {
-        outPids[0] = (DWORD)pidVal;
-        return 1;
+        pids.push_back(static_cast<DWORD>(pidVal));
+        return pids;
     }
 
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
+    ScopedHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (!snap) return pids;
 
-    PROCESSENTRY32W pe;
+    PROCESSENTRY32W pe{};
     pe.dwSize = sizeof(pe);
-    int count = 0;
-
-    if (Process32FirstW(snap, &pe)) {
+    if (Process32FirstW(snap.get(), &pe)) {
         do {
             if (_wcsicmp(pe.szExeFile, target) == 0) {
-                if (count < maxPids) {
-                    outPids[count++] = pe.th32ProcessID;
-                }
+                pids.push_back(pe.th32ProcessID);
             }
-        } while (Process32NextW(snap, &pe));
+        } while (Process32NextW(snap.get(), &pe));
     }
-
-    CloseHandle(snap);
-    return count;
+    return pids;
 }
 
-static HMODULE FindLoadedModule(DWORD pid, const wchar_t* dllNameOrPath) {
+HMODULE FindLoadedModule(DWORD pid, const wchar_t* dllNameOrPath) {
+    if (!dllNameOrPath) return nullptr;
     const wchar_t* baseName = wcsrchr(dllNameOrPath, L'\\');
     baseName = baseName ? baseName + 1 : dllNameOrPath;
 
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-    if (snap == INVALID_HANDLE_VALUE) return nullptr;
+    ScopedHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid));
+    if (!snap) return nullptr;
 
-    MODULEENTRY32W me;
+    MODULEENTRY32W me{};
     me.dwSize = sizeof(me);
-    HMODULE foundMod = nullptr;
-
-    if (Module32FirstW(snap, &me)) {
+    if (Module32FirstW(snap.get(), &me)) {
         do {
             if (_wcsicmp(me.szModule, baseName) == 0 || _wcsicmp(me.szExePath, dllNameOrPath) == 0) {
-                foundMod = me.hModule;
-                break;
+                return me.hModule;
             }
-        } while (Module32NextW(snap, &me));
+        } while (Module32NextW(snap.get(), &me));
     }
-    CloseHandle(snap);
-    return foundMod;
+    return nullptr;
 }
 
-static int CmdListProcesses() {
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) {
+std::wstring ResolveFullPathW(const wchar_t* path) {
+    DWORD needed = GetFullPathNameW(path, 0, nullptr, nullptr);
+    if (needed == 0) return {};
+    std::wstring out(needed, L'\0');
+    DWORD written = GetFullPathNameW(path, needed, out.data(), nullptr);
+    if (written == 0 || written >= needed) return {};
+    out.resize(written);
+    return out;
+}
+
+int CmdListProcesses() {
+    ScopedHandle snap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (!snap) {
         PrintJsonError("CreateToolhelp32Snapshot failed", GetLastError());
         return 1;
     }
 
-    PROCESSENTRY32W pe;
+    PROCESSENTRY32W pe{};
     pe.dwSize = sizeof(pe);
     printf("{\"ok\":true,\"processes\":[");
     bool first = true;
 
-    if (Process32FirstW(snap, &pe)) {
+    if (Process32FirstW(snap.get(), &pe)) {
         do {
-            char utf8Name[MAX_PATH * 3];
-            WideCharToMultiByte(CP_UTF8, 0, pe.szExeFile, -1, utf8Name, sizeof(utf8Name), nullptr, nullptr);
+            std::string utf8Name = EscapeJsonUtf8(WideToUtf8(pe.szExeFile));
             if (!first) printf(",");
             first = false;
-            printf("{\"pid\":%lu,\"name\":\"%s\"}", (unsigned long)pe.th32ProcessID, utf8Name);
-        } while (Process32NextW(snap, &pe));
+            printf("{\"pid\":%lu,\"name\":\"%s\"}",
+                   static_cast<unsigned long>(pe.th32ProcessID),
+                   utf8Name.c_str());
+        } while (Process32NextW(snap.get(), &pe));
     }
 
     printf("]}\n");
-    CloseHandle(snap);
     return 0;
 }
 
-static int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
-    DWORD pids[64];
-    int pidCount = FindProcessesByNameOrPid(target, pids, 64);
-    if (pidCount == 0) {
+int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
+    std::vector<DWORD> pids = FindProcessesByNameOrPid(target);
+    if (pids.empty()) {
         PrintJsonError("Target process not found", 0);
         return 1;
     }
 
-    wchar_t fullPath[MAX_PATH];
-    if (!GetFullPathNameW(dllPath, MAX_PATH, fullPath, nullptr)) {
+    std::wstring fullPath = ResolveFullPathW(dllPath);
+    if (fullPath.empty()) {
         PrintJsonError("Invalid DLL path", GetLastError());
         return 1;
     }
 
-    if (GetFileAttributesW(fullPath) == INVALID_FILE_ATTRIBUTES) {
+    if (GetFileAttributesW(fullPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
         PrintJsonError("DLL file does not exist", GetLastError());
+        return 1;
+    }
+
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    auto loadLibAddr = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+        reinterpret_cast<void*>(GetProcAddress(hKernel32, "LoadLibraryW")));
+    if (!loadLibAddr) {
+        PrintJsonError("Failed to resolve LoadLibraryW", GetLastError());
         return 1;
     }
 
@@ -115,62 +138,57 @@ static int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
     DWORD firstOkPid = 0;
     int injectedCount = 0;
 
-    for (int i = 0; i < pidCount; i++) {
-        DWORD pid = pids[i];
-        if (FindLoadedModule(pid, fullPath) != nullptr) {
+    const size_t pathBytes = (fullPath.size() + 1) * sizeof(wchar_t);
+
+    for (DWORD pid : pids) {
+        if (FindLoadedModule(pid, fullPath.c_str()) != nullptr) {
             if (firstOkPid == 0) firstOkPid = pid;
             injectedCount++;
             continue;
         }
 
-        HANDLE hProcess = OpenProcess(
+        ScopedHandle hProcess(OpenProcess(
             PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
             FALSE,
-            pid
-        );
+            pid));
         if (!hProcess) {
             lastErr = GetLastError();
             lastErrMsg = "OpenProcess failed (try running as Administrator)";
             continue;
         }
 
-        size_t pathBytes = (wcslen(fullPath) + 1) * sizeof(wchar_t);
-        LPVOID remoteMem = VirtualAllocEx(hProcess, nullptr, pathBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        ScopedRemoteMem remoteMem(
+            hProcess.get(),
+            VirtualAllocEx(hProcess.get(), nullptr, pathBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
         if (!remoteMem) {
             lastErr = GetLastError();
             lastErrMsg = "VirtualAllocEx failed";
-            CloseHandle(hProcess);
             continue;
         }
 
-        if (!WriteProcessMemory(hProcess, remoteMem, fullPath, pathBytes, nullptr)) {
+        if (!WriteProcessMemory(hProcess.get(), remoteMem.get(), fullPath.c_str(), pathBytes, nullptr)) {
             lastErr = GetLastError();
             lastErrMsg = "WriteProcessMemory failed";
-            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-            CloseHandle(hProcess);
             continue;
         }
 
-        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-        LPTHREAD_START_ROUTINE loadLibAddr = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "LoadLibraryW");
-
-        HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, loadLibAddr, remoteMem, 0, nullptr);
+        ScopedHandle hThread(CreateRemoteThread(hProcess.get(), nullptr, 0, loadLibAddr, remoteMem.get(), 0, nullptr));
         if (!hThread) {
             lastErr = GetLastError();
             lastErrMsg = "CreateRemoteThread failed";
-            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-            CloseHandle(hProcess);
             continue;
         }
 
-        WaitForSingleObject(hThread, 10000);
+        DWORD waitRes = WaitForSingleObject(hThread.get(), 10000);
+        if (waitRes != WAIT_OBJECT_0) {
+            remoteMem.release();
+            lastErr = GetLastError();
+            lastErrMsg = "Remote LoadLibraryW timed out";
+            continue;
+        }
+
         DWORD exitCode = 0;
-        GetExitCodeThread(hThread, &exitCode);
-
-        CloseHandle(hThread);
-        VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
-
+        GetExitCodeThread(hThread.get(), &exitCode);
         if (exitCode == 0) {
             lastErr = 0;
             lastErrMsg = "Remote LoadLibraryW returned NULL";
@@ -181,61 +199,180 @@ static int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
         injectedCount++;
     }
 
+    pids.clear();
+    pids.shrink_to_fit();
+
     if (injectedCount == 0) {
-        PrintJsonError(lastErrMsg, lastErr);
+        PrintJsonError(lastErrMsg, lastErr, ("Inject failed for target=" + WideToUtf8(target) + " dll=" + WideToUtf8(fullPath)).c_str());
         return 1;
     }
 
-    printf("{\"ok\":true,\"pid\":%lu,\"count\":%d,\"injected\":true}\n", (unsigned long)firstOkPid, injectedCount);
+    printf("{\"ok\":true,\"pid\":%lu,\"count\":%d,\"injected\":true}\n",
+           static_cast<unsigned long>(firstOkPid),
+           injectedCount);
     return 0;
 }
 
-static int CmdEject(const wchar_t* target, const wchar_t* dllName) {
-    DWORD pids[64];
-    int pidCount = FindProcessesByNameOrPid(target, pids, 64);
-    if (pidCount == 0) {
+int CmdLaunchAndInject(const wchar_t* exeNameOrPath, const wchar_t* dllPath) {
+    std::wstring fullDll = ResolveFullPathW(dllPath);
+    if (fullDll.empty() || GetFileAttributesW(fullDll.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        PrintJsonError("DLL file does not exist", GetLastError(), "CmdLaunchAndInject");
+        return 1;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring cmdLine = exeNameOrPath;
+
+    if (!CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        DWORD err = GetLastError();
+        PrintJsonError("CreateProcessW failed", err, ("CreateProcessW failed for " + WideToUtf8(exeNameOrPath)).c_str());
+        return 1;
+    }
+
+    ScopedHandle hProc(pi.hProcess);
+    ScopedHandle hThread(pi.hThread);
+    // Wait briefly for the new process to initialize its message loop / user32 before injecting
+    WaitForInputIdle(hProc.get(), 3000);
+
+    wchar_t pidBuf[32];
+    _snwprintf_s(pidBuf, 32, _TRUNCATE, L"%lu", static_cast<unsigned long>(pi.dwProcessId));
+    return CmdInject(pidBuf, fullDll.c_str());
+}
+
+int CmdEject(const wchar_t* target, const wchar_t* dllName) {
+    std::vector<DWORD> pids = FindProcessesByNameOrPid(target);
+    if (pids.empty()) {
         PrintJsonError("Target process not found", 0);
+        return 1;
+    }
+
+    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+    auto freeLibAddr = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+        reinterpret_cast<void*>(GetProcAddress(hKernel32, "FreeLibrary")));
+    if (!freeLibAddr) {
+        PrintJsonError("Failed to resolve FreeLibrary", GetLastError());
         return 1;
     }
 
     int ejectedCount = 0;
     DWORD firstPid = pids[0];
 
-    for (int i = 0; i < pidCount; i++) {
-        DWORD pid = pids[i];
+    for (DWORD pid : pids) {
         HMODULE foundMod = FindLoadedModule(pid, dllName);
         if (!foundMod) continue;
 
-        HANDLE hProcess = OpenProcess(
+        ScopedHandle hProcess(OpenProcess(
             PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION,
             FALSE,
-            pid
-        );
+            pid));
         if (!hProcess) continue;
 
-        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-        LPTHREAD_START_ROUTINE freeLibAddr = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "FreeLibrary");
-        HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, freeLibAddr, (LPVOID)foundMod, 0, nullptr);
-        if (hThread) {
-            WaitForSingleObject(hThread, 10000);
-            CloseHandle(hThread);
-            ejectedCount++;
+        ScopedHandle hThread(CreateRemoteThread(
+            hProcess.get(), nullptr, 0, freeLibAddr, reinterpret_cast<LPVOID>(foundMod), 0, nullptr));
+        if (hThread && WaitForSingleObject(hThread.get(), 10000) == WAIT_OBJECT_0) {
+            DWORD exitCode = 0;
+            if (GetExitCodeThread(hThread.get(), &exitCode) && exitCode != 0) {
+                ejectedCount++;
+            }
         }
-        CloseHandle(hProcess);
     }
 
+    pids.clear();
+    pids.shrink_to_fit();
+
     if (ejectedCount == 0) {
-        printf("{\"ok\":true,\"pid\":%lu,\"ejected\":false,\"reason\":\"not_loaded\"}\n", (unsigned long)firstPid);
+        printf("{\"ok\":true,\"pid\":%lu,\"ejected\":false,\"reason\":\"not_loaded\"}\n",
+               static_cast<unsigned long>(firstPid));
         return 0;
     }
 
-    printf("{\"ok\":true,\"pid\":%lu,\"count\":%d,\"ejected\":true}\n", (unsigned long)firstPid, ejectedCount);
+    printf("{\"ok\":true,\"pid\":%lu,\"count\":%d,\"ejected\":true}\n",
+           static_cast<unsigned long>(firstPid),
+           ejectedCount);
     return 0;
 }
 
+int CmdSysInfo() {
+    HardwareProfile hw = DetectHardwareProfile();
+    std::wstring dataDir = GetLocalAppDataOmnilynxDir();
+    bool elevated = IsProcessElevated();
+
+    printf("{\"ok\":true,\"logicalCores\":%lu,\"totalRamMB\":%llu,\"availRamMB\":%llu,"
+           "\"gpuVramMB\":%llu,\"gpuName\":\"%s\",\"osMajor\":%lu,\"osMinor\":%lu,"
+           "\"osBuild\":%lu,\"isWindows11\":%s,\"tier\":\"%s\","
+           "\"recommendedThreads\":%lu,\"ioBufferBytes\":%zu,\"backgroundPollMs\":%lu,"
+           "\"elevated\":%s,\"dataDir\":\"%s\"}\n",
+           static_cast<unsigned long>(hw.logicalCores),
+           static_cast<unsigned long long>(hw.totalRamMB),
+           static_cast<unsigned long long>(hw.availRamMB),
+           static_cast<unsigned long long>(hw.gpuVramMB),
+           EscapeJsonUtf8(WideToUtf8(hw.gpuName)).c_str(),
+           static_cast<unsigned long>(hw.osMajor),
+           static_cast<unsigned long>(hw.osMinor),
+           static_cast<unsigned long>(hw.osBuild),
+           hw.isWindows11 ? "true" : "false",
+           HardwareTierName(hw.tier),
+           static_cast<unsigned long>(hw.recommendedThreads),
+           hw.ioBufferBytes,
+           static_cast<unsigned long>(hw.backgroundPollMs),
+           elevated ? "true" : "false",
+           EscapeJsonUtf8(WideToUtf8(dataDir)).c_str());
+    return 0;
+}
+
+int CmdFetch(const wchar_t* modFileName) {
+    std::vector<uint8_t> bytes;
+    std::string sha256;
+    std::string error;
+    if (!FetchModSourceWithCache(modFileName, bytes, sha256, error)) {
+        PrintJsonError(error.c_str(), GetLastError());
+        return 1;
+    }
+    const size_t size = bytes.size();
+    bytes.clear();
+    bytes.shrink_to_fit();
+
+    printf("{\"ok\":true,\"file\":\"%s\",\"bytes\":%zu,\"sha256\":\"%s\"}\n",
+           EscapeJsonUtf8(WideToUtf8(modFileName)).c_str(),
+           size,
+           sha256.c_str());
+    return 0;
+}
+
+int CmdInstall(const wchar_t* stagedTemp, const wchar_t* targetPath, const wchar_t* backupPath) {
+    if (PathRequiresElevation(targetPath) && !IsProcessElevated()) {
+        PrintJsonError("UAC elevation required for protected directory", ERROR_ACCESS_DENIED);
+        return 1;
+    }
+    std::wstring backup = backupPath ? backupPath : L"";
+    if (!AtomicReplaceFileW(stagedTemp, targetPath, backup)) {
+        PrintJsonError("Atomic file installation failed", GetLastError());
+        return 1;
+    }
+    printf("{\"ok\":true,\"installed\":true}\n");
+    return 0;
+}
+
+int CmdRollback(const wchar_t* backupPath, const wchar_t* targetPath) {
+    if (PathRequiresElevation(targetPath) && !IsProcessElevated()) {
+        PrintJsonError("UAC elevation required for protected directory", ERROR_ACCESS_DENIED);
+        return 1;
+    }
+    if (!RestoreBackupFileW(backupPath, targetPath)) {
+        PrintJsonError("Rollback failed", GetLastError());
+        return 1;
+    }
+    printf("{\"ok\":true,\"restored\":true}\n");
+    return 0;
+}
+
+} // namespace
+
 int wmain(int argc, wchar_t* argv[]) {
     if (argc < 2) {
-        printf("{\"ok\":false,\"error\":\"Usage: wendo_injector <list|inject|eject> ...\"}\n");
+        printf("{\"ok\":false,\"error\":\"Usage: wendo_injector <list|inject|eject|sysinfo|fetch|install|rollback> ...\"}\n");
         return 1;
     }
 
@@ -245,8 +382,23 @@ int wmain(int argc, wchar_t* argv[]) {
     if (_wcsicmp(argv[1], L"inject") == 0 && argc >= 4) {
         return CmdInject(argv[2], argv[3]);
     }
+    if (_wcsicmp(argv[1], L"launch") == 0 && argc >= 4) {
+        return CmdLaunchAndInject(argv[2], argv[3]);
+    }
     if (_wcsicmp(argv[1], L"eject") == 0 && argc >= 4) {
         return CmdEject(argv[2], argv[3]);
+    }
+    if (_wcsicmp(argv[1], L"sysinfo") == 0) {
+        return CmdSysInfo();
+    }
+    if (_wcsicmp(argv[1], L"fetch") == 0 && argc >= 3) {
+        return CmdFetch(argv[2]);
+    }
+    if (_wcsicmp(argv[1], L"install") == 0 && argc >= 4) {
+        return CmdInstall(argv[2], argv[3], argc >= 5 ? argv[4] : nullptr);
+    }
+    if (_wcsicmp(argv[1], L"rollback") == 0 && argc >= 4) {
+        return CmdRollback(argv[2], argv[3]);
     }
 
     printf("{\"ok\":false,\"error\":\"Invalid arguments\"}\n");

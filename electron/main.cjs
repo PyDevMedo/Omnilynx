@@ -87,6 +87,24 @@ function writeJsonSafe(filePath, data) {
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
 }
 
+function getErrorLogPath() {
+  const dir = path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Omnilynx');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return path.join(dir, 'error.log');
+}
+
+function appendErrorLog(context, detail) {
+  try {
+    const logPath = getErrorLogPath();
+    const ts = new Date().toISOString();
+    fs.appendFileSync(logPath, `[${ts}] ${context}: ${detail}\r\n`, 'utf8');
+  } catch {
+    // ignore logging failure
+  }
+}
+
 function findCompiler() {
   const candidates = [
     path.join(COMPILER_DIR, 'bin', 'clang++.exe'),
@@ -261,12 +279,16 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   const args = [
     '--target=x86_64-w64-windows-gnu',
     '-std=c++20',
+    '-D_WIN32_WINNT=0x0A00',
+    '-DWINVER=0x0A00',
     '-DUNICODE',
     '-D_UNICODE',
     `-DWH_MOD_ID=L"${safeId}"`,
     `-DWENDO_SETTINGS_INI=L"${escapedIni}"`,
     '-shared',
     '-static',
+    '-static-libgcc',
+    '-static-libstdc++',
     '-O2',
     `-I${ENGINE_INCLUDE}`,
     buildSrcPath,
@@ -434,8 +456,16 @@ app.whenReady().then(() => {
     const state = readJsonSafe(STATE_FILE, { mods: {} });
     const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
     const srcPath = findModSourceFile(safeId) || path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
+    const resolvedCode = (code && code.trim()) ? code : (fs.existsSync(srcPath) ? fs.readFileSync(srcPath, 'utf8') : '');
     const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
-    const targets = extractTargetsFromCode(code || '');
+    const targets = extractTargetsFromCode(resolvedCode);
+
+    if (!fs.existsSync(ENGINE_BIN)) {
+      const msg = `Native engine missing: ${ENGINE_BIN}`;
+      appendErrorLog('mods:toggle', msg);
+      dialog.showErrorBox('Omnilynx Engine Error', `${msg}\n\nLog: ${getErrorLogPath()}`);
+      return { ok: false, enabled: false, message: msg };
+    }
 
     if (enabled) {
       writeSettingsIni(state);
@@ -446,36 +476,56 @@ app.whenReady().then(() => {
         (fs.existsSync(srcPath) && fs.statSync(srcPath).mtimeMs > dllMtime) ||
         (fs.existsSync(headerPath) && fs.statSync(headerPath).mtimeMs > dllMtime);
       if (needsCompile) {
-        const comp = await compileModInternal(safeId, code, compilerOptions);
+        const comp = await compileModInternal(safeId, resolvedCode, compilerOptions);
         if (!comp.ok) {
-          return { ok: false, enabled: false, message: `Compile failed: ${comp.stderr}` };
+          const msg = `Compile failed for ${safeId}: ${comp.stderr}`;
+          appendErrorLog('engine:compile', msg);
+          dialog.showErrorBox('Omnilynx Compile Error', `${msg}\n\nLog: ${getErrorLogPath()}`);
+          return { ok: false, enabled: false, message: msg };
         }
       }
 
       let injectedAny = false;
-      let accessDenied = false;
       let lastErr = '';
+      let lastWin32Err = 0;
+
       for (const target of targets) {
-        const res = await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
+        let res = await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
+        let parsed = null;
         try {
-          const parsed = JSON.parse(res.stdout);
-          if (parsed.ok) injectedAny = true;
-          else {
-            lastErr = parsed.error || 'Process not running';
-            if (lastErr.includes('OpenProcess') || lastErr.includes('LoadLibraryW')) {
-              accessDenied = true;
-            }
-          }
+          parsed = JSON.parse(res.stdout);
         } catch {
-          lastErr = res.stderr || 'Injector error';
+          parsed = null;
+        }
+
+        // If target is not running yet (and isn't explorer.exe), launch it via CreateProcessW and inject
+        if (parsed && !parsed.ok && parsed.error === 'Target process not found' && target.toLowerCase() !== 'explorer.exe') {
+          res = await runExecFile(ENGINE_BIN, ['launch', target, dllPath]);
+          try {
+            parsed = JSON.parse(res.stdout);
+          } catch {
+            parsed = null;
+          }
+        }
+
+        if (parsed && parsed.ok) {
+          injectedAny = true;
+        } else if (parsed) {
+          lastErr = parsed.win32Message ? `${parsed.error} [Win32: ${parsed.win32Message}]` : (parsed.error || 'Injection failed');
+          lastWin32Err = parsed.win32Error || 0;
+        } else {
+          lastErr = res.stderr || res.stdout || 'Injector failed to execute';
         }
       }
 
-      if (!injectedAny && accessDenied) {
+      if (!injectedAny) {
+        const errMsg = `Failed to run/inject ${safeId} into ${targets.join(', ')}: ${lastErr} (Win32=${lastWin32Err})`;
+        appendErrorLog('mods:toggle', errMsg);
+        dialog.showErrorBox('Omnilynx Execution Error', `${errMsg}\n\nLog: ${getErrorLogPath()}`);
         return {
           ok: false,
           enabled: false,
-          message: `فشل الحقن في ${targets.join(', ')}: ${lastErr}`
+          message: errMsg
         };
       }
 
@@ -485,10 +535,8 @@ app.whenReady().then(() => {
       return {
         ok: true,
         enabled: true,
-        injected: injectedAny,
-        message: injectedAny
-          ? `تم التشغيل والحقن في ${targets.join(', ')}`
-          : `تم التفعيل — بانتظار تشغيل ${targets.join(', ')} للحقن التلقائي`
+        injected: true,
+        message: `تم التشغيل والحقن في ${targets.join(', ')}`
       };
     } else {
       for (const target of targets) {
@@ -677,7 +725,16 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('store:fetchModSource', async (_, { downloadUrl }) => {
-    return await httpsGetText(downloadUrl);
+    const rawUrl = String(downloadUrl || '')
+      .replace('https://github.com/', 'https://raw.githubusercontent.com/')
+      .replace('/blob/', '/')
+      .replace('/raw/', '/');
+    const text = await httpsGetText(rawUrl);
+    if (/^\s*<!doctype\s+html|^\s*<html/i.test(text)) {
+      appendErrorLog('store:fetchModSource', `Received HTML instead of mod source from ${rawUrl}`);
+      throw new Error('Downloaded HTML page instead of raw C++ mod source');
+    }
+    return text;
   });
 
   ipcMain.handle('mods:installFromLink', async (_, rawLink) => {
@@ -701,7 +758,8 @@ app.whenReady().then(() => {
     } else if (link.startsWith('http://') || link.startsWith('https://')) {
       downloadUrl = link
         .replace('https://github.com/', 'https://raw.githubusercontent.com/')
-        .replace('/blob/', '/');
+        .replace('/blob/', '/')
+        .replace('/raw/', '/');
       const parts = downloadUrl.split('/');
       const last = parts[parts.length - 1] || 'shared-mod.omni.cpp';
       modId = stripModExt(last);
@@ -714,11 +772,15 @@ app.whenReady().then(() => {
 
     try {
       const code = await httpsGetText(downloadUrl);
+      if (/^\s*<!doctype\s+html|^\s*<html/i.test(code)) {
+        throw new Error('URL returned HTML instead of raw C++ source');
+      }
       const safeId = modId.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
       const dest = path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
       fs.writeFileSync(dest, code, 'utf8');
       return { ok: true, id: safeId, filePath: dest };
     } catch (e) {
+      appendErrorLog('mods:installFromLink', `${downloadUrl}: ${e.message}`);
       return { ok: false, error: `Download failed: ${e.message}` };
     }
   });
