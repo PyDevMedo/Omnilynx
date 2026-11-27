@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const https = require('https');
 
 const isDev = !app.isPackaged;
@@ -233,27 +233,51 @@ function extractTargetRulesFromCode(code) {
   const includes = [];
   const excludes = new Set();
   let hasWildcard = false;
+  let hasToolMod = false;
   const incRegex = /\/\/\s*@include\s+(.*)/g;
   const excRegex = /\/\/\s*@exclude\s+(.*)/g;
   let m;
   while ((m = incRegex.exec(code)) !== null) {
     const val = m[1].trim();
     if (val === '*') hasWildcard = true;
-    else if (val) includes.push(path.basename(val).toLowerCase());
+    else if (val) {
+      const base = path.basename(val).toLowerCase();
+      if (base === 'windhawk.exe') hasToolMod = true;
+      else includes.push(base);
+    }
   }
   while ((m = excRegex.exec(code)) !== null) {
     const val = m[1].trim();
     if (val) excludes.add(path.basename(val).toLowerCase());
   }
   if (includes.length > 0) {
-    return { includes: includes.filter((t) => !excludes.has(t)), excludes, hasWildcard: false };
+    return { includes: includes.filter((t) => !excludes.has(t)), excludes, hasWildcard: false, hasToolMod };
+  }
+  if (hasToolMod) {
+    return { includes: [], excludes, hasWildcard: false, hasToolMod: true };
   }
   if (hasWildcard) {
     const defaults = ['explorer.exe', 'notepad.exe', 'chrome.exe', 'msedge.exe', 'windowsterminal.exe', 'code.exe']
       .filter((t) => !excludes.has(t));
-    return { includes: defaults, excludes, hasWildcard: true };
+    return { includes: defaults, excludes, hasWildcard: true, hasToolMod: false };
   }
-  return { includes: ['explorer.exe'], excludes, hasWildcard: false };
+  return { includes: ['explorer.exe'], excludes, hasWildcard: false, hasToolMod: false };
+}
+
+function startToolModHost(modId, dllPath) {
+  if (!fs.existsSync(ENGINE_BIN) || !fs.existsSync(dllPath)) return false;
+  const child = spawn(ENGINE_BIN, ['-tool-mod', modId, dllPath], {
+    windowsHide: true,
+    detached: true,
+    stdio: 'ignore'
+  });
+  child.unref();
+  return true;
+}
+
+async function stopToolModHost(modId) {
+  if (!fs.existsSync(ENGINE_BIN)) return;
+  await runExecFile(ENGINE_BIN, ['stop-tool', modId]);
 }
 
 function extractTargetsFromCode(code) {
@@ -524,6 +548,7 @@ app.whenReady().then(() => {
     const filePath = findModSourceFile(modId);
     const dllPath = getModActiveDllPath(modId, state);
 
+    await stopToolModHost(modId);
     if (filePath && fs.existsSync(ENGINE_BIN)) {
       try {
         const code = fs.readFileSync(filePath, 'utf8');
@@ -574,7 +599,7 @@ app.whenReady().then(() => {
     const srcPath = findModSourceFile(safeId) || path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
     const resolvedCode = (code && code.trim()) ? code : (fs.existsSync(srcPath) ? fs.readFileSync(srcPath, 'utf8') : '');
     let dllPath = getModActiveDllPath(safeId, state);
-    const targets = extractTargetsFromCode(resolvedCode);
+    const { includes: targets, hasToolMod } = extractTargetRulesFromCode(resolvedCode);
 
     if (!fs.existsSync(ENGINE_BIN)) {
       const msg = `Native engine missing: ${ENGINE_BIN}`;
@@ -673,6 +698,12 @@ app.whenReady().then(() => {
         }
       }
 
+      if (hasToolMod) {
+        if (startToolModHost(safeId, activeDllPath)) {
+          injectedAny = true;
+        }
+      }
+
       if (!injectedAny && !waitingForTarget) {
         const errMsg = `Failed to inject ${safeId} into ${targets.join(', ')}: ${lastErr} (Win32=${lastWin32Err})`;
         appendErrorLog('mods:toggle', errMsg);
@@ -692,10 +723,13 @@ app.whenReady().then(() => {
         enabled: true,
         injected: injectedAny,
         message: injectedAny
-          ? `✅ تم التشغيل والحقن في الخلفية (${targets.join(', ')})`
+          ? `✅ تم التشغيل والحقن في الخلفية (${[...targets, ...(hasToolMod ? ['tool-host'] : [])].join(', ')})`
           : `⏳ مفعّل في الخلفية — بانتظار فتح ${targets.join(', ')} للحقن التلقائي`
       };
     } else {
+      if (hasToolMod) {
+        await stopToolModHost(safeId);
+      }
       for (const target of targets) {
         await runExecFile(ENGINE_BIN, ['eject', target, path.basename(dllPath)]);
       }
@@ -717,7 +751,7 @@ app.whenReady().then(() => {
     writeSettingsIni(state, settings);
 
     if (state.mods[safeId]?.enabled) {
-      const targets = extractTargetsFromCode(code || '');
+      const { includes: targets, hasToolMod } = extractTargetRulesFromCode(code || '');
       if (EXTERNAL_MOD_IDS.has(safeId)) {
         const paramVal = extractFirstNumericSetting(settings);
         for (const target of targets) {
@@ -730,10 +764,16 @@ app.whenReady().then(() => {
           if (comp.ok && comp.dllPath) dllPath = comp.dllPath;
         }
         if (fs.existsSync(dllPath)) {
+          if (hasToolMod) {
+            await stopToolModHost(safeId);
+          }
           for (const target of targets) {
             await runExecFile(ENGINE_BIN, ['eject', target, path.basename(dllPath)]);
           }
           await new Promise((r) => setTimeout(r, 150));
+          if (hasToolMod) {
+            startToolModHost(safeId, dllPath);
+          }
           for (const target of targets) {
             await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
           }
@@ -1120,7 +1160,11 @@ app.whenReady().then(() => {
         }
 
         const code = fs.readFileSync(srcPath, 'utf8');
-        const { includes, excludes } = extractTargetRulesFromCode(code);
+        const { includes, excludes, hasToolMod } = extractTargetRulesFromCode(code);
+        if (hasToolMod && !isExt) {
+          // Idempotent: CmdToolMod exits immediately if its named event already exists
+          startToolModHost(modId, dllPath);
+        }
         const targetSet = new Set(includes.map((t) => t.toLowerCase()));
         for (const proc of processes) {
           const procName = String(proc.name || '').toLowerCase();

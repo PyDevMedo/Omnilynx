@@ -680,13 +680,84 @@ int CmdApply(const wchar_t* modId, const wchar_t* targetExe, const wchar_t* stat
     return 0;
 }
 
+int CmdToolMod(const wchar_t* modId, const wchar_t* dllPath) {
+    std::wstring fullPath = ResolveFullPathW(dllPath);
+    if (fullPath.empty() || GetFileAttributesW(fullPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        TraceRuntimeLog("ToolMod", "DLL not found: " + WideToUtf8(dllPath));
+        return 1;
+    }
+
+    std::wstring eventName = std::wstring(L"Omnilynx_StopToolMod_") + modId;
+    ScopedHandle hStopEvent(CreateEventW(nullptr, TRUE, FALSE, eventName.c_str()));
+    if (!hStopEvent) {
+        TraceRuntimeLog("ToolMod", "CreateEventW failed");
+        return 1;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        TraceRuntimeLog("ToolMod", "ToolMod already running for " + WideToUtf8(modId));
+        return 0;
+    }
+
+    GrantAppPackagesReadExecute(fullPath);
+    TraceRuntimeLog("ToolMod", "Starting tool-mod host mod=" + WideToUtf8(modId) + " dll=" + WideToUtf8(fullPath));
+
+    HMODULE hMod = LoadLibraryW(fullPath.c_str());
+    if (!hMod) {
+        TraceRuntimeLog("ToolMod", "LoadLibraryW failed err=" + FormatWin32ErrorUtf8(GetLastError()));
+        return 1;
+    }
+
+    HANDLE waitHandles[1] = { hStopEvent.get() };
+    for (;;) {
+        DWORD wait = MsgWaitForMultipleObjects(1, waitHandles, FALSE, INFINITE, QS_ALLINPUT);
+        if (wait == WAIT_OBJECT_0) {
+            break;
+        }
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                SetEvent(hStopEvent.get());
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (WaitForSingleObject(hStopEvent.get(), 0) == WAIT_OBJECT_0) {
+            break;
+        }
+    }
+
+    TraceRuntimeLog("ToolMod", "Stopping tool-mod host mod=" + WideToUtf8(modId));
+    FreeLibrary(hMod);
+    return 0;
+}
+
+int CmdStopToolMod(const wchar_t* modId) {
+    std::wstring eventName = std::wstring(L"Omnilynx_StopToolMod_") + modId;
+    ScopedHandle hStopEvent(OpenEventW(EVENT_MODIFY_STATE, FALSE, eventName.c_str()));
+    if (!hStopEvent) {
+        printf("{\"ok\":true,\"stopped\":false,\"reason\":\"not_running\"}\n");
+        return 0;
+    }
+    SetEvent(hStopEvent.get());
+    printf("{\"ok\":true,\"stopped\":true}\n");
+    return 0;
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
     (void)EnableSeDebugPrivilege();
     if (argc < 2) {
-        printf("{\"ok\":false,\"error\":\"Usage: wendo_injector <list|inject|eject|apply|sysinfo|fetch|install|rollback> ...\"}\n");
+        printf("{\"ok\":false,\"error\":\"Usage: wendo_injector <list|inject|eject|apply|sysinfo|fetch|install|rollback|-tool-mod|stop-tool> ...\"}\n");
         return 1;
+    }
+
+    if (_wcsicmp(argv[1], L"-tool-mod") == 0 && argc >= 4) {
+        return CmdToolMod(argv[2], argv[3]);
+    }
+    if (_wcsicmp(argv[1], L"stop-tool") == 0 && argc >= 3) {
+        return CmdStopToolMod(argv[2]);
     }
 
     if (_wcsicmp(argv[1], L"apply") == 0 && argc >= 5) {
