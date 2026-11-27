@@ -37,6 +37,8 @@ target_link_libraries(wendo_injector PRIVATE
     kernel32
     user32
     shell32
+    dwmapi
+    psapi
     ole32
     uuid
     winhttp

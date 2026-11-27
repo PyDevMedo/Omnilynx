@@ -28,6 +28,7 @@ import omnilynxLogo from './assets/omnilynx-logo.png';
 import { parseModSource, createNewModTemplate } from './utils/modParser';
 import { getLocalizedModCopy } from './utils/modTranslations';
 import ModDetailsModal from './components/ModDetailsModal';
+import CachedPreviewImage from './components/CachedPreviewImage';
 
 // Lazy load heavy CodeMirror modals to keep idle RAM low
 const ModEditorModal = lazy(() => import('./components/ModEditorModal'));
@@ -822,18 +823,12 @@ export default function App() {
                             {meta?.category && <span className="badge badge-indigo">{meta.category}</span>}
                           </div>
 
-                          {meta?.previewImg && (
-                            <div style={{ height: 110, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border-subtle)', background: '#0b0e14' }}>
-                              <img
-                                src={meta.previewImg}
-                                alt={meta.name}
-                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                onError={(e) => {
-                                  e.currentTarget.parentElement.style.display = 'none';
-                                }}
-                              />
-                            </div>
-                          )}
+                          <CachedPreviewImage
+                            id={item.id}
+                            url={item.preview_url || meta?.previewImg || item.previewImg}
+                            title={meta?.name || item.name}
+                            height={128}
+                          />
 
                           {meta?.desc && (
                             <p style={{ fontSize: 12.2, color: 'var(--text-secondary)', lineHeight: 1.5, flex: 1 }}>

@@ -6,6 +6,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { X, Download, CheckCircle2, FileText, Sliders, Code2, ExternalLink, Share2 } from 'lucide-react';
 import { parseModSource } from '../utils/modParser';
 import omnilynxLogo from '../assets/omnilynx-logo.png';
+import CachedPreviewImage from './CachedPreviewImage';
 
 export default function StorePreviewModal({ item, lang = 'ar', modsRepo = 'PyDevMedo/Omnilynx', isInstalled, installing, onClose, onInstall, onShare }) {
   const [tab, setTab] = useState('readme');
@@ -76,6 +77,8 @@ export default function StorePreviewModal({ item, lang = 'ar', modsRepo = 'PyDev
         : parsed.readme || '*No README provided for this mod.*';
     return marked.parse(sanitizeLinks(textToRender));
   }, [parsed.readme, lang, translatedReadme]);
+
+  const previewBannerUrl = item.preview_url || item.previewImg;
 
   return (
     <div
@@ -267,7 +270,14 @@ export default function StorePreviewModal({ item, lang = 'ar', modsRepo = 'PyDev
                   ))}
                 </div>
               )}
-              <div className="markdown-body" dangerouslySetInnerHTML={{ __html: readmeHtml }} />
+              <div className="markdown-body">
+                {previewBannerUrl && (
+                  <div style={{ marginBottom: 14 }}>
+                    <CachedPreviewImage id={item.id} url={previewBannerUrl} title={item.name || item.id} height={190} />
+                  </div>
+                )}
+                <div dangerouslySetInnerHTML={{ __html: readmeHtml }} />
+              </div>
             </div>
           ) : tab === 'settings' ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

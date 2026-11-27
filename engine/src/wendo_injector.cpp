@@ -1,6 +1,7 @@
 #include "omnilynx_raii.hpp"
 #include "omnilynx_hwprofile.hpp"
 #include "omnilynx_net.hpp"
+#include "omnilynx_external.hpp"
 
 #include <tlhelp32.h>
 #include <cstdio>
@@ -368,12 +369,51 @@ int CmdRollback(const wchar_t* backupPath, const wchar_t* targetPath) {
     return 0;
 }
 
+int CmdApply(const wchar_t* modId, const wchar_t* targetExe, const wchar_t* stateStr, const wchar_t* paramStr) {
+    const bool enable = (_wcsicmp(stateStr, L"on") == 0 || _wcsicmp(stateStr, L"enable") == 0 || wcscmp(stateStr, L"1") == 0);
+    const int paramVal = paramStr ? static_cast<int>(wcstol(paramStr, nullptr, 10)) : 0;
+    ExternalApplyResult r = ApplyExternalMod(modId, targetExe, enable, paramVal);
+
+    // If enabling a per-window mod and target has no visible windows yet, launch it via CreateProcessW and apply
+    if (!r.ok && enable && targetExe && _wcsicmp(targetExe, L"explorer.exe") != 0 &&
+        r.error == "Target process has no visible windows") {
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        std::wstring cmd = targetExe;
+        if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            ScopedHandle hProc(pi.hProcess);
+            ScopedHandle hThread(pi.hThread);
+            WaitForInputIdle(hProc.get(), 4000);
+            Sleep(250);
+            r = ApplyExternalMod(modId, targetExe, true, paramVal);
+        } else {
+            DWORD err = GetLastError();
+            PrintJsonError("CreateProcessW failed", err, ("CmdApply launch " + WideToUtf8(targetExe)).c_str());
+            return 1;
+        }
+    }
+
+    if (!r.ok) {
+        PrintJsonError(r.error.c_str(), r.win32Error, ("CmdApply " + WideToUtf8(modId)).c_str());
+        return 1;
+    }
+
+    printf("{\"ok\":true,\"external\":true,\"affectedWindows\":%d}\n", r.affectedWindows);
+    return 0;
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+    (void)EnableSeDebugPrivilege();
     if (argc < 2) {
-        printf("{\"ok\":false,\"error\":\"Usage: wendo_injector <list|inject|eject|sysinfo|fetch|install|rollback> ...\"}\n");
+        printf("{\"ok\":false,\"error\":\"Usage: wendo_injector <list|inject|eject|launch|apply|sysinfo|fetch|install|rollback> ...\"}\n");
         return 1;
+    }
+
+    if (_wcsicmp(argv[1], L"apply") == 0 && argc >= 5) {
+        return CmdApply(argv[2], argv[3], argv[4], argc >= 6 ? argv[5] : nullptr);
     }
 
     if (_wcsicmp(argv[1], L"list") == 0) {

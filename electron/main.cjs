@@ -451,7 +451,30 @@ app.whenReady().then(() => {
     return { ok: true, id: modId };
   });
 
-  // Standalone Toggle: compiles + injects Omnilynx native DLLs directly
+  // Standalone Toggle: uses external Win32/DWM execution for window/system mods (zero Win32:5 on UWP/Win11), or native DLL injection for custom C++ hooks
+  const EXTERNAL_MOD_IDS = new Set([
+    'win-glass-window-opacity', 'wendo-window-opacity',
+    'win-mica-acrylic-backdrop', 'wendo-translucent-mica',
+    'win-universal-dark-mode', 'wendo-dark-titlebars',
+    'win-smooth-window-transitions', 'omnilynx-rounded-corners',
+    'omnilynx-always-on-top', 'omnilynx-border-accent',
+    'win-switcher-backdrop', 'win-active-window-expose',
+    'win-taskbar-floating-style', 'win-taskbar-acrylic-tint',
+    'win-taskbar-zorder-control', 'win-taskbar-autohide-toggle',
+    'win-alttab-focus-guard', 'win-cursor-follow-focus',
+    'win-monitor-snap-focus', 'win-taskbar-stability-guard',
+    'win-system-ram-trimmer'
+  ]);
+
+  function extractFirstNumericSetting(modSettings) {
+    if (!modSettings || typeof modSettings !== 'object') return '0';
+    for (const v of Object.values(modSettings)) {
+      if (typeof v === 'number') return String(v);
+      if (typeof v === 'boolean') return v ? '1' : '0';
+    }
+    return '0';
+  }
+
   ipcMain.handle('mods:toggle', async (_, { id, enabled, code, compilerOptions }) => {
     const state = readJsonSafe(STATE_FILE, { mods: {} });
     const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
@@ -465,6 +488,41 @@ app.whenReady().then(() => {
       appendErrorLog('mods:toggle', msg);
       dialog.showErrorBox('Omnilynx Engine Error', `${msg}\n\nLog: ${getErrorLogPath()}`);
       return { ok: false, enabled: false, message: msg };
+    }
+
+    // Fast, zero-Win32:5 external Win32/DWM execution for window-styling & system mods
+    if (EXTERNAL_MOD_IDS.has(safeId)) {
+      const paramVal = extractFirstNumericSetting(state.mods[safeId]?.settings);
+      let appliedAny = false;
+      let lastErr = '';
+      for (const target of targets) {
+        const res = await runExecFile(ENGINE_BIN, ['apply', safeId, target, enabled ? 'on' : 'off', paramVal]);
+        try {
+          const parsed = JSON.parse(res.stdout);
+          if (parsed.ok) appliedAny = true;
+          else lastErr = parsed.win32Message ? `${parsed.error} [Win32: ${parsed.win32Message}]` : (parsed.error || 'Apply failed');
+        } catch {
+          lastErr = res.stderr || res.stdout || 'External apply failed';
+        }
+      }
+
+      if (!appliedAny && enabled) {
+        const errMsg = `Failed to apply ${safeId} to ${targets.join(', ')}: ${lastErr}`;
+        appendErrorLog('mods:toggle(external)', errMsg);
+        dialog.showErrorBox('Omnilynx Execution Error', `${errMsg}\n\nLog: ${getErrorLogPath()}`);
+        return { ok: false, enabled: false, message: errMsg };
+      }
+
+      state.mods[safeId] = { ...(state.mods[safeId] || {}), enabled: Boolean(enabled) };
+      writeJsonSafe(STATE_FILE, state);
+      return {
+        ok: true,
+        enabled: Boolean(enabled),
+        injected: appliedAny,
+        message: enabled
+          ? `✅ تم التشغيل على ${targets.join(', ')}`
+          : `Disabled & restored ${targets.join(', ')}`
+      };
     }
 
     if (enabled) {
@@ -560,18 +618,25 @@ app.whenReady().then(() => {
     writeSettingsIni(state, settings);
 
     if (state.mods[safeId]?.enabled) {
-      const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
-      if (!fs.existsSync(dllPath) && code) {
-        await compileModInternal(safeId, code, '');
-      }
       const targets = extractTargetsFromCode(code || '');
-      if (fs.existsSync(dllPath)) {
+      if (EXTERNAL_MOD_IDS.has(safeId)) {
+        const paramVal = extractFirstNumericSetting(settings);
         for (const target of targets) {
-          await runExecFile(ENGINE_BIN, ['eject', target, `${safeId}.dll`]);
+          await runExecFile(ENGINE_BIN, ['apply', safeId, target, 'on', paramVal]);
         }
-        await new Promise((r) => setTimeout(r, 150));
-        for (const target of targets) {
-          await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
+      } else {
+        const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
+        if (!fs.existsSync(dllPath) && code) {
+          await compileModInternal(safeId, code, '');
+        }
+        if (fs.existsSync(dllPath)) {
+          for (const target of targets) {
+            await runExecFile(ENGINE_BIN, ['eject', target, `${safeId}.dll`]);
+          }
+          await new Promise((r) => setTimeout(r, 150));
+          for (const target of targets) {
+            await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
+          }
         }
       }
     }
@@ -722,6 +787,30 @@ app.whenReady().then(() => {
         htmlUrl: item.html_url,
         size: item.size
       }));
+  });
+
+  ipcMain.handle('previews:cache', async (_, { id, url }) => {
+    try {
+      const safeId = String(id || '').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+      if (!safeId) return { ok: false };
+      const cacheDir = path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Omnilynx', 'cache', 'previews');
+      if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+      const ext = String(url || '').toLowerCase().endsWith('.png') ? '.png' : '.svg';
+      const localFile = path.join(cacheDir, `${safeId}${ext}`);
+      if (fs.existsSync(localFile)) {
+        const content = fs.readFileSync(localFile);
+        const mime = ext === '.png' ? 'image/png' : 'image/svg+xml';
+        return { ok: true, dataUrl: `data:${mime};base64,${content.toString('base64')}` };
+      }
+      if (!url || !url.startsWith('https://raw.githubusercontent.com/PyDevMedo/Omnilynx/')) {
+        return { ok: false };
+      }
+      const data = await httpsGetText(url);
+      fs.writeFileSync(localFile, data, 'utf8');
+      return { ok: true, dataUrl: `data:image/svg+xml;base64,${Buffer.from(data, 'utf8').toString('base64')}` };
+    } catch {
+      return { ok: false };
+    }
   });
 
   ipcMain.handle('store:fetchModSource', async (_, { downloadUrl }) => {

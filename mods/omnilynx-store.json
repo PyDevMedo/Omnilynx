@@ -7,9 +7,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Window Management",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-alttab-focus-guard.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-alttab-focus-guard.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-alttab-focus-guard.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-alttab-focus-guard.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-alttab-focus-guard.svg"
   },
   {
     "id": "win-switcher-backdrop",
@@ -19,9 +20,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Appearance",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-switcher-backdrop.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-switcher-backdrop.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-switcher-backdrop.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-switcher-backdrop.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-switcher-backdrop.svg"
   },
   {
     "id": "win-cursor-follow-focus",
@@ -31,9 +33,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Productivity",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-cursor-follow-focus.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-cursor-follow-focus.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-cursor-follow-focus.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-cursor-follow-focus.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-cursor-follow-focus.svg"
   },
   {
     "id": "win-monitor-snap-focus",
@@ -43,9 +46,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Window Management",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-monitor-snap-focus.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-monitor-snap-focus.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-monitor-snap-focus.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-monitor-snap-focus.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-monitor-snap-focus.svg"
   },
   {
     "id": "win-universal-dark-mode",
@@ -55,9 +59,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Appearance",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-universal-dark-mode.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-universal-dark-mode.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-universal-dark-mode.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-universal-dark-mode.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-universal-dark-mode.svg"
   },
   {
     "id": "win-active-window-expose",
@@ -67,9 +72,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Appearance",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-active-window-expose.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-active-window-expose.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-active-window-expose.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-active-window-expose.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-active-window-expose.svg"
   },
   {
     "id": "win-smooth-window-transitions",
@@ -79,9 +85,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Appearance",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-smooth-window-transitions.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-smooth-window-transitions.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-smooth-window-transitions.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-smooth-window-transitions.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-smooth-window-transitions.svg"
   },
   {
     "id": "win-taskbar-floating-style",
@@ -91,9 +98,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Taskbar",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-floating-style.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-taskbar-floating-style.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-floating-style.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-floating-style.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-floating-style.svg"
   },
   {
     "id": "win-taskbar-stability-guard",
@@ -103,9 +111,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Taskbar",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-stability-guard.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-taskbar-stability-guard.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-stability-guard.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-stability-guard.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-stability-guard.svg"
   },
   {
     "id": "win-system-ram-trimmer",
@@ -115,9 +124,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Performance",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-system-ram-trimmer.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-system-ram-trimmer.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-system-ram-trimmer.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-system-ram-trimmer.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-system-ram-trimmer.svg"
   },
   {
     "id": "win-taskbar-acrylic-tint",
@@ -127,9 +137,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Taskbar",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-acrylic-tint.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-taskbar-acrylic-tint.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-acrylic-tint.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-acrylic-tint.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-acrylic-tint.svg"
   },
   {
     "id": "win-taskbar-zorder-control",
@@ -139,9 +150,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Taskbar",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-zorder-control.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-taskbar-zorder-control.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-zorder-control.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-zorder-control.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-zorder-control.svg"
   },
   {
     "id": "win-taskbar-autohide-toggle",
@@ -151,9 +163,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Taskbar",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-autohide-toggle.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-taskbar-autohide-toggle.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-autohide-toggle.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-taskbar-autohide-toggle.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-taskbar-autohide-toggle.svg"
   },
   {
     "id": "win-mica-acrylic-backdrop",
@@ -163,9 +176,10 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Appearance",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-mica-acrylic-backdrop.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-mica-acrylic-backdrop.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-mica-acrylic-backdrop.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-mica-acrylic-backdrop.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-mica-acrylic-backdrop.svg"
   },
   {
     "id": "win-glass-window-opacity",
@@ -175,8 +189,9 @@
     "version": "1.0.0",
     "author": "Omnilynx",
     "category": "Appearance",
-    "previewImg": null,
+    "previewImg": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-glass-window-opacity.svg",
     "downloadUrl": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/win-glass-window-opacity.wh.cpp",
-    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-glass-window-opacity.wh.cpp"
+    "htmlUrl": "https://github.com/PyDevMedo/Omnilynx/blob/main/mods/win-glass-window-opacity.wh.cpp",
+    "preview_url": "https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/previews/win-glass-window-opacity.svg"
   }
 ]

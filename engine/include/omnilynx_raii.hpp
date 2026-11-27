@@ -274,6 +274,31 @@ inline bool IsProcessElevated() noexcept {
     return elev.TokenIsElevated != 0;
 }
 
+// Enable SeDebugPrivilege for processes that genuinely require process-level access
+inline bool EnableSeDebugPrivilege() noexcept {
+    ScopedHandle token;
+    HANDLE rawToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &rawToken)) {
+        return false;
+    }
+    token.reset(rawToken);
+
+    LUID luid{};
+    if (!LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &luid)) {
+        return false;
+    }
+
+    TOKEN_PRIVILEGES tp{};
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = luid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+    if (!AdjustTokenPrivileges(token.get(), FALSE, &tp, sizeof(tp), nullptr, nullptr)) {
+        return false;
+    }
+    return GetLastError() == ERROR_SUCCESS;
+}
+
 // Determine whether a target path requires UAC elevation (Program Files, Windows, System32)
 inline bool PathRequiresElevation(const std::wstring& path) {
     wchar_t lower[MAX_PATH * 2] = {};

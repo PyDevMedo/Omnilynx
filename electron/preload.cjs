@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('wendoAPI', {
   // Explore (GitHub Store)
   fetchStoreIndex: (repoUrl) => ipcRenderer.invoke('store:fetchIndex', repoUrl),
   fetchStoreModSource: (payload) => ipcRenderer.invoke('store:fetchModSource', payload),
+  cachePreviewImage: (payload) => ipcRenderer.invoke('previews:cache', payload),
   installFromLink: (link) => ipcRenderer.invoke('mods:installFromLink', link),
   translateText: (payload) => ipcRenderer.invoke('app:translateText', payload),
 

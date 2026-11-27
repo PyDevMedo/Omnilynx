@@ -28,7 +28,7 @@ if (-not $VerifyOnly) {
         "-I$IncludeDir" `
         $SrcExe `
         -o $OutExe `
-        -lkernel32 -luser32 -lshell32 -lole32 -luuid -lwinhttp -lbcrypt -ladvapi32
+        -lkernel32 -luser32 -lshell32 -ldwmapi -lpsapi -lole32 -luuid -lwinhttp -lbcrypt -ladvapi32
     if ($LASTEXITCODE -ne 0) { throw "wendo_injector.exe build failed" }
 
     if (-not (Test-Path $ModsCompiled)) {
