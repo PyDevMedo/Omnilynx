@@ -1,37 +1,53 @@
 import React, { useState, useEffect } from 'react';
 
-function buildFallbackSvgDataUrl(title = 'Omnilynx Mod') {
-  const safe = String(title).replace(/[<>&"']/g, '');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="320" viewBox="0 0 640 320">
-    <rect width="640" height="320" rx="14" fill="#0b1120"/>
-    <rect x="20" y="20" width="600" height="280" rx="10" fill="#111827" stroke="#38bdf8" stroke-opacity="0.4"/>
-    <text x="320" y="155" text-anchor="middle" fill="#f8fafc" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700">${safe}</text>
-    <text x="320" y="185" text-anchor="middle" fill="#38bdf8" font-family="Segoe UI, sans-serif" font-size="13">Omnilynx Offline Preview</text>
-  </svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
-export default function CachedPreviewImage({ id, url, title, height = 128 }) {
-  const [src, setSrc] = useState(() => buildFallbackSvgDataUrl(title));
+export default function CachedPreviewImage({ id, url, title, includes = [], category = '', height = 128 }) {
+  const [src, setSrc] = useState(url || '');
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let active = true;
-    const targetUrl = url || '';
-    if (window.wendoAPI?.cachePreviewImage && id && targetUrl) {
-      window.wendoAPI.cachePreviewImage({ id, url: targetUrl }).then((res) => {
+    setFailed(false);
+    setSrc(url || '');
+
+    if (window.wendoAPI?.cachePreviewImage && id && url) {
+      window.wendoAPI.cachePreviewImage({ id, url }).then((res) => {
         if (active && res?.ok && res.dataUrl) {
           setSrc(res.dataUrl);
-        } else if (active && targetUrl) {
-          setSrc(targetUrl);
         }
       });
-    } else if (targetUrl) {
-      setSrc(targetUrl);
     }
     return () => {
       active = false;
     };
-  }, [id, url, title]);
+  }, [id, url]);
+
+  if (!url || failed) {
+    const targets = Array.isArray(includes) && includes.length > 0 ? includes.slice(0, 3).join(', ') : 'Windows Shell';
+    return (
+      <div
+        style={{
+          height: 64,
+          borderRadius: 10,
+          border: '1px solid var(--border-subtle)',
+          background: 'rgba(15, 23, 42, 0.55)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 12px',
+          gap: 8
+        }}
+      >
+        <span style={{ fontSize: 11.5, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          🎯 {targets}
+        </span>
+        {category && (
+          <span style={{ fontSize: 10.5, padding: '2px 8px', borderRadius: 999, background: 'rgba(56,189,248,0.12)', color: '#38bdf8', flexShrink: 0 }}>
+            {category}
+          </span>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{ height, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border-subtle)', background: '#0b0e14' }}>
@@ -39,7 +55,7 @@ export default function CachedPreviewImage({ id, url, title, height = 128 }) {
         src={src}
         alt={title || id}
         style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-        onError={() => setSrc(buildFallbackSvgDataUrl(title))}
+        onError={() => setFailed(true)}
       />
     </div>
   );

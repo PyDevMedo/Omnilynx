@@ -827,6 +827,8 @@ export default function App() {
                             id={item.id}
                             url={item.preview_url || meta?.previewImg || item.previewImg}
                             title={meta?.name || item.name}
+                            includes={item.include}
+                            category={item.category}
                             height={128}
                           />
 

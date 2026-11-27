@@ -186,21 +186,35 @@ function runExecFile(exe, args) {
   });
 }
 
-function extractTargetsFromCode(code) {
-  const targets = [];
+function extractTargetRulesFromCode(code) {
+  const includes = [];
+  const excludes = new Set();
   let hasWildcard = false;
-  const regex = /\/\/\s*@include\s+(.*)/g;
+  const incRegex = /\/\/\s*@include\s+(.*)/g;
+  const excRegex = /\/\/\s*@exclude\s+(.*)/g;
   let m;
-  while ((m = regex.exec(code)) !== null) {
+  while ((m = incRegex.exec(code)) !== null) {
     const val = m[1].trim();
     if (val === '*') hasWildcard = true;
-    else if (val) targets.push(val);
+    else if (val) includes.push(path.basename(val).toLowerCase());
   }
-  if (targets.length > 0) return targets;
+  while ((m = excRegex.exec(code)) !== null) {
+    const val = m[1].trim();
+    if (val) excludes.add(path.basename(val).toLowerCase());
+  }
+  if (includes.length > 0) {
+    return { includes: includes.filter((t) => !excludes.has(t)), excludes, hasWildcard: false };
+  }
   if (hasWildcard) {
-    return ['explorer.exe', 'notepad.exe', 'chrome.exe', 'msedge.exe', 'WindowsTerminal.exe', 'Code.exe'];
+    const defaults = ['explorer.exe', 'notepad.exe', 'chrome.exe', 'msedge.exe', 'windowsterminal.exe', 'code.exe']
+      .filter((t) => !excludes.has(t));
+    return { includes: defaults, excludes, hasWildcard: true };
   }
-  return ['notepad.exe'];
+  return { includes: ['explorer.exe'], excludes, hasWildcard: false };
+}
+
+function extractTargetsFromCode(code) {
+  return extractTargetRulesFromCode(code).includes;
 }
 
 function extractMetaField(code, key, fallback = '') {
@@ -262,13 +276,10 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
 
   fs.writeFileSync(srcPath, code, 'utf8');
-  let buildSrcPath = srcPath;
-
-  if (!code.includes('wendo_mod.h')) {
-    const tempBuildPath = path.join(MODS_COMPILED_DIR, `${safeId}.build.cpp`);
-    fs.writeFileSync(tempBuildPath, `#include "wendo_mod.h"\n${code}`, 'utf8');
-    buildSrcPath = tempBuildPath;
-  }
+  const needsSdkAutoInclude =
+    !code.includes('wendo_mod.h') &&
+    !code.includes('omnilynx_mod_sdk.hpp') &&
+    !code.includes('omnilynx_mod_iface.hpp');
 
   const resolvedOptions = compilerOptions || extractMetaField(code, 'compilerOptions', '');
   const extraFlags = resolvedOptions
@@ -291,7 +302,8 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     '-static-libstdc++',
     '-O2',
     `-I${ENGINE_INCLUDE}`,
-    buildSrcPath,
+    ...(needsSdkAutoInclude ? ['-include', path.join(ENGINE_INCLUDE, 'omnilynx_mod_sdk.hpp')] : []),
+    srcPath,
     '-o',
     dllPath,
     `-L${ENGINE_LIB}`,
@@ -490,23 +502,25 @@ app.whenReady().then(() => {
       return { ok: false, enabled: false, message: msg };
     }
 
-    // Fast, zero-Win32:5 external Win32/DWM execution for window-styling & system mods
+    // Fast, zero-Win32:5 external Win32/DWM execution for window-styling & system mods (silent, never opens windows)
     if (EXTERNAL_MOD_IDS.has(safeId)) {
       const paramVal = extractFirstNumericSetting(state.mods[safeId]?.settings);
       let appliedAny = false;
+      let waitingForTarget = false;
       let lastErr = '';
       for (const target of targets) {
         const res = await runExecFile(ENGINE_BIN, ['apply', safeId, target, enabled ? 'on' : 'off', paramVal]);
         try {
           const parsed = JSON.parse(res.stdout);
           if (parsed.ok) appliedAny = true;
+          else if (parsed.error === 'Target process has no visible windows') waitingForTarget = true;
           else lastErr = parsed.win32Message ? `${parsed.error} [Win32: ${parsed.win32Message}]` : (parsed.error || 'Apply failed');
         } catch {
           lastErr = res.stderr || res.stdout || 'External apply failed';
         }
       }
 
-      if (!appliedAny && enabled) {
+      if (!appliedAny && !waitingForTarget && enabled) {
         const errMsg = `Failed to apply ${safeId} to ${targets.join(', ')}: ${lastErr}`;
         appendErrorLog('mods:toggle(external)', errMsg);
         dialog.showErrorBox('Omnilynx Execution Error', `${errMsg}\n\nLog: ${getErrorLogPath()}`);
@@ -520,14 +534,16 @@ app.whenReady().then(() => {
         enabled: Boolean(enabled),
         injected: appliedAny,
         message: enabled
-          ? `✅ تم التشغيل على ${targets.join(', ')}`
+          ? (appliedAny
+              ? `✅ تم التطبيق في الخلفية على ${targets.join(', ')}`
+              : `⏳ مفعّل في الخلفية — سيتصل تلقائياً عند فتح ${targets.join(', ')}`)
           : `Disabled & restored ${targets.join(', ')}`
       };
     }
 
     if (enabled) {
       writeSettingsIni(state);
-      const headerPath = path.join(ENGINE_INCLUDE, 'wendo_mod.h');
+      const headerPath = path.join(ENGINE_INCLUDE, 'omnilynx_mod_sdk.hpp');
       const dllMtime = fs.existsSync(dllPath) ? fs.statSync(dllPath).mtimeMs : 0;
       const needsCompile =
         !fs.existsSync(dllPath) ||
@@ -544,11 +560,12 @@ app.whenReady().then(() => {
       }
 
       let injectedAny = false;
+      let waitingForTarget = false;
       let lastErr = '';
       let lastWin32Err = 0;
 
       for (const target of targets) {
-        let res = await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
+        const res = await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
         let parsed = null;
         try {
           parsed = JSON.parse(res.stdout);
@@ -556,18 +573,10 @@ app.whenReady().then(() => {
           parsed = null;
         }
 
-        // If target is not running yet (and isn't explorer.exe), launch it via CreateProcessW and inject
-        if (parsed && !parsed.ok && parsed.error === 'Target process not found' && target.toLowerCase() !== 'explorer.exe') {
-          res = await runExecFile(ENGINE_BIN, ['launch', target, dllPath]);
-          try {
-            parsed = JSON.parse(res.stdout);
-          } catch {
-            parsed = null;
-          }
-        }
-
         if (parsed && parsed.ok) {
           injectedAny = true;
+        } else if (parsed && parsed.error === 'Target process not found') {
+          waitingForTarget = true;
         } else if (parsed) {
           lastErr = parsed.win32Message ? `${parsed.error} [Win32: ${parsed.win32Message}]` : (parsed.error || 'Injection failed');
           lastWin32Err = parsed.win32Error || 0;
@@ -576,8 +585,8 @@ app.whenReady().then(() => {
         }
       }
 
-      if (!injectedAny) {
-        const errMsg = `Failed to run/inject ${safeId} into ${targets.join(', ')}: ${lastErr} (Win32=${lastWin32Err})`;
+      if (!injectedAny && !waitingForTarget) {
+        const errMsg = `Failed to inject ${safeId} into ${targets.join(', ')}: ${lastErr} (Win32=${lastWin32Err})`;
         appendErrorLog('mods:toggle', errMsg);
         dialog.showErrorBox('Omnilynx Execution Error', `${errMsg}\n\nLog: ${getErrorLogPath()}`);
         return {
@@ -593,8 +602,10 @@ app.whenReady().then(() => {
       return {
         ok: true,
         enabled: true,
-        injected: true,
-        message: `تم التشغيل والحقن في ${targets.join(', ')}`
+        injected: injectedAny,
+        message: injectedAny
+          ? `✅ تم التشغيل والحقن في الخلفية (${targets.join(', ')})`
+          : `⏳ مفعّل في الخلفية — بانتظار فتح ${targets.join(', ')} للحقن التلقائي`
       };
     } else {
       for (const target of targets) {
@@ -792,22 +803,44 @@ app.whenReady().then(() => {
   ipcMain.handle('previews:cache', async (_, { id, url }) => {
     try {
       const safeId = String(id || '').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-      if (!safeId) return { ok: false };
+      if (!safeId || !url || !/^https:\/\//i.test(url)) return { ok: false };
       const cacheDir = path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Omnilynx', 'cache', 'previews');
       if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
-      const ext = String(url || '').toLowerCase().endsWith('.png') ? '.png' : '.svg';
+
+      const cleanPath = url.split('?')[0].toLowerCase();
+      const extMatch = cleanPath.match(/\.(png|jpe?g|gif|webp|svg)$/);
+      const ext = extMatch ? `.${extMatch[1] === 'jpeg' ? 'jpg' : extMatch[1]}` : '.png';
+      const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+      const mime = mimeMap[ext] || 'image/png';
+
       const localFile = path.join(cacheDir, `${safeId}${ext}`);
       if (fs.existsSync(localFile)) {
         const content = fs.readFileSync(localFile);
-        const mime = ext === '.png' ? 'image/png' : 'image/svg+xml';
         return { ok: true, dataUrl: `data:${mime};base64,${content.toString('base64')}` };
       }
-      if (!url || !url.startsWith('https://raw.githubusercontent.com/PyDevMedo/Omnilynx/')) {
-        return { ok: false };
-      }
-      const data = await httpsGetText(url);
-      fs.writeFileSync(localFile, data, 'utf8');
-      return { ok: true, dataUrl: `data:image/svg+xml;base64,${Buffer.from(data, 'utf8').toString('base64')}` };
+
+      const buf = await new Promise((resolve, reject) => {
+        const fetchBin = (targetUrl, left = 4) => {
+          const req = https.get(targetUrl, { headers: { 'User-Agent': 'Omnilynx-Studio/1.0' } }, (res) => {
+            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && left > 0) {
+              res.resume();
+              return fetchBin(new URL(res.headers.location, targetUrl).toString(), left - 1);
+            }
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              res.resume();
+              return reject(new Error(`HTTP ${res.statusCode}`));
+            }
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+          });
+          req.on('error', reject);
+        };
+        fetchBin(url);
+      });
+
+      fs.writeFileSync(localFile, buf);
+      return { ok: true, dataUrl: `data:${mime};base64,${buf.toString('base64')}` };
     } catch {
       return { ok: false };
     }
@@ -980,9 +1013,10 @@ app.whenReady().then(() => {
 
       const alivePids = new Set(processes.map((p) => p.pid));
       for (const modId of enabledIds) {
+        const isExt = EXTERNAL_MOD_IDS.has(modId);
         const dllPath = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
         const srcPath = findModSourceFile(modId);
-        if (!srcPath || !fs.existsSync(dllPath)) continue;
+        if (!srcPath || (!isExt && !fs.existsSync(dllPath))) continue;
 
         let seen = injectedPidsByMod.get(modId);
         if (!seen) {
@@ -994,15 +1028,28 @@ app.whenReady().then(() => {
         }
 
         const code = fs.readFileSync(srcPath, 'utf8');
-        const targetSet = new Set(extractTargetsFromCode(code).map((t) => t.toLowerCase()));
+        const { includes, excludes } = extractTargetRulesFromCode(code);
+        const targetSet = new Set(includes.map((t) => t.toLowerCase()));
         for (const proc of processes) {
-          if (proc.pid > 4 && targetSet.has(String(proc.name || '').toLowerCase()) && !seen.has(proc.pid)) {
-            const res = await runExecFile(ENGINE_BIN, ['inject', String(proc.pid), dllPath]);
-            try {
-              const p = JSON.parse(res.stdout);
-              if (p.ok) seen.add(proc.pid);
-            } catch {
-              // ignore
+          const procName = String(proc.name || '').toLowerCase();
+          if (proc.pid > 4 && targetSet.has(procName) && !excludes.has(procName) && !seen.has(proc.pid)) {
+            if (isExt) {
+              const paramVal = extractFirstNumericSetting(state.mods[modId]?.settings);
+              const res = await runExecFile(ENGINE_BIN, ['apply', modId, procName, 'on', paramVal]);
+              try {
+                const p = JSON.parse(res.stdout);
+                if (p.ok) seen.add(proc.pid);
+              } catch {
+                // ignore
+              }
+            } else {
+              const res = await runExecFile(ENGINE_BIN, ['inject', String(proc.pid), dllPath]);
+              try {
+                const p = JSON.parse(res.stdout);
+                if (p.ok) seen.add(proc.pid);
+              } catch {
+                // ignore
+              }
             }
           }
         }
@@ -1012,7 +1059,7 @@ app.whenReady().then(() => {
     } finally {
       watcherBusy = false;
     }
-  }, 15000);
+  }, 5000);
 });
 
 app.on('window-all-closed', () => {

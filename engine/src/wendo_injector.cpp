@@ -214,34 +214,6 @@ int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
     return 0;
 }
 
-int CmdLaunchAndInject(const wchar_t* exeNameOrPath, const wchar_t* dllPath) {
-    std::wstring fullDll = ResolveFullPathW(dllPath);
-    if (fullDll.empty() || GetFileAttributesW(fullDll.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        PrintJsonError("DLL file does not exist", GetLastError(), "CmdLaunchAndInject");
-        return 1;
-    }
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    std::wstring cmdLine = exeNameOrPath;
-
-    if (!CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-        DWORD err = GetLastError();
-        PrintJsonError("CreateProcessW failed", err, ("CreateProcessW failed for " + WideToUtf8(exeNameOrPath)).c_str());
-        return 1;
-    }
-
-    ScopedHandle hProc(pi.hProcess);
-    ScopedHandle hThread(pi.hThread);
-    // Wait briefly for the new process to initialize its message loop / user32 before injecting
-    WaitForInputIdle(hProc.get(), 3000);
-
-    wchar_t pidBuf[32];
-    _snwprintf_s(pidBuf, 32, _TRUNCATE, L"%lu", static_cast<unsigned long>(pi.dwProcessId));
-    return CmdInject(pidBuf, fullDll.c_str());
-}
-
 int CmdEject(const wchar_t* target, const wchar_t* dllName) {
     std::vector<DWORD> pids = FindProcessesByNameOrPid(target);
     if (pids.empty()) {
@@ -375,25 +347,6 @@ int CmdApply(const wchar_t* modId, const wchar_t* targetExe, const wchar_t* stat
     ExternalApplyResult r = ApplyExternalMod(modId, targetExe, enable, paramVal);
 
     // If enabling a per-window mod and target has no visible windows yet, launch it via CreateProcessW and apply
-    if (!r.ok && enable && targetExe && _wcsicmp(targetExe, L"explorer.exe") != 0 &&
-        r.error == "Target process has no visible windows") {
-        STARTUPINFOW si{};
-        si.cb = sizeof(si);
-        PROCESS_INFORMATION pi{};
-        std::wstring cmd = targetExe;
-        if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-            ScopedHandle hProc(pi.hProcess);
-            ScopedHandle hThread(pi.hThread);
-            WaitForInputIdle(hProc.get(), 4000);
-            Sleep(250);
-            r = ApplyExternalMod(modId, targetExe, true, paramVal);
-        } else {
-            DWORD err = GetLastError();
-            PrintJsonError("CreateProcessW failed", err, ("CmdApply launch " + WideToUtf8(targetExe)).c_str());
-            return 1;
-        }
-    }
-
     if (!r.ok) {
         PrintJsonError(r.error.c_str(), r.win32Error, ("CmdApply " + WideToUtf8(modId)).c_str());
         return 1;
@@ -408,7 +361,7 @@ int CmdApply(const wchar_t* modId, const wchar_t* targetExe, const wchar_t* stat
 int wmain(int argc, wchar_t* argv[]) {
     (void)EnableSeDebugPrivilege();
     if (argc < 2) {
-        printf("{\"ok\":false,\"error\":\"Usage: wendo_injector <list|inject|eject|launch|apply|sysinfo|fetch|install|rollback> ...\"}\n");
+        printf("{\"ok\":false,\"error\":\"Usage: wendo_injector <list|inject|eject|apply|sysinfo|fetch|install|rollback> ...\"}\n");
         return 1;
     }
 
@@ -421,9 +374,6 @@ int wmain(int argc, wchar_t* argv[]) {
     }
     if (_wcsicmp(argv[1], L"inject") == 0 && argc >= 4) {
         return CmdInject(argv[2], argv[3]);
-    }
-    if (_wcsicmp(argv[1], L"launch") == 0 && argc >= 4) {
-        return CmdLaunchAndInject(argv[2], argv[3]);
     }
     if (_wcsicmp(argv[1], L"eject") == 0 && argc >= 4) {
         return CmdEject(argv[2], argv[3]);
