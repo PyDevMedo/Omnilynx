@@ -197,7 +197,24 @@ export default function App() {
     setStoreLoading(true);
     setStoreError('');
     try {
-      setStoreMods(await window.wendoAPI.fetchStoreIndex(appConfig.modsRepo));
+      const list = await window.wendoAPI.fetchStoreIndex(appConfig.modsRepo);
+      setStoreMods(list);
+      const preCached = {};
+      for (const item of list) {
+        if (item.name || item.description) {
+          preCached[item.id] = {
+            name: item.name || item.id,
+            desc: item.description || '',
+            version: item.version || '1.0.0',
+            author: item.author || 'Omnilynx',
+            category: item.category || 'System',
+            previewImg: item.previewImg || null
+          };
+        }
+      }
+      if (Object.keys(preCached).length > 0) {
+        setStoreMetaCache((prev) => ({ ...prev, ...preCached }));
+      }
     } catch (e) {
       setStoreError(e.message || 'Failed to load mods from GitHub');
     }

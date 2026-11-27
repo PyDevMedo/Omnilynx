@@ -623,9 +623,17 @@ app.whenReady().then(() => {
     compilerDir: COMPILER_DIR
   }));
 
-  // IPC: Explore Store (GitHub)
+  // IPC: Explore Store (GitHub — prefers verified standalone omnilynx-store.json)
   ipcMain.handle('store:fetchIndex', async (_, customRepo) => {
     const repo = customRepo || 'PyDevMedo/Omnilynx';
+    try {
+      const curated = await httpsGetJson(`https://raw.githubusercontent.com/${repo}/main/mods/omnilynx-store.json`);
+      if (Array.isArray(curated) && curated.length > 0) {
+        return curated;
+      }
+    } catch {
+      // fall back to GitHub contents API for custom repos
+    }
     const apiUrl = `https://api.github.com/repos/${repo}/contents/mods`;
     const items = await httpsGetJson(apiUrl);
     return items
