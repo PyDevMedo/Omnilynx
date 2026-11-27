@@ -12,12 +12,12 @@ static void PrintJsonError(const char* msg, DWORD err) {
     printf("{\"ok\":false,\"error\":\"%s\",\"win32Error\":%lu}\n", msg, (unsigned long)err);
 }
 
-static DWORD FindProcessByNameOrPid(const wchar_t* target) {
-    // Check if numeric PID
+static int FindProcessesByNameOrPid(const wchar_t* target, DWORD* outPids, int maxPids) {
     wchar_t* endPtr = nullptr;
     unsigned long pidVal = wcstoul(target, &endPtr, 10);
     if (endPtr != target && *endPtr == L'\0' && pidVal > 0) {
-        return (DWORD)pidVal;
+        outPids[0] = (DWORD)pidVal;
+        return 1;
     }
 
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -25,19 +25,43 @@ static DWORD FindProcessByNameOrPid(const wchar_t* target) {
 
     PROCESSENTRY32W pe;
     pe.dwSize = sizeof(pe);
-    DWORD foundPid = 0;
+    int count = 0;
 
     if (Process32FirstW(snap, &pe)) {
         do {
             if (_wcsicmp(pe.szExeFile, target) == 0) {
-                foundPid = pe.th32ProcessID;
-                break;
+                if (count < maxPids) {
+                    outPids[count++] = pe.th32ProcessID;
+                }
             }
         } while (Process32NextW(snap, &pe));
     }
 
     CloseHandle(snap);
-    return foundPid;
+    return count;
+}
+
+static HMODULE FindLoadedModule(DWORD pid, const wchar_t* dllNameOrPath) {
+    const wchar_t* baseName = wcsrchr(dllNameOrPath, L'\\');
+    baseName = baseName ? baseName + 1 : dllNameOrPath;
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+    if (snap == INVALID_HANDLE_VALUE) return nullptr;
+
+    MODULEENTRY32W me;
+    me.dwSize = sizeof(me);
+    HMODULE foundMod = nullptr;
+
+    if (Module32FirstW(snap, &me)) {
+        do {
+            if (_wcsicmp(me.szModule, baseName) == 0 || _wcsicmp(me.szExePath, dllNameOrPath) == 0) {
+                foundMod = me.hModule;
+                break;
+            }
+        } while (Module32NextW(snap, &me));
+    }
+    CloseHandle(snap);
+    return foundMod;
 }
 
 static int CmdListProcesses() {
@@ -68,8 +92,9 @@ static int CmdListProcesses() {
 }
 
 static int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
-    DWORD pid = FindProcessByNameOrPid(target);
-    if (pid == 0) {
+    DWORD pids[64];
+    int pidCount = FindProcessesByNameOrPid(target, pids, 64);
+    if (pidCount == 0) {
         PrintJsonError("Target process not found", 0);
         return 1;
     }
@@ -85,119 +110,126 @@ static int CmdInject(const wchar_t* target, const wchar_t* dllPath) {
         return 1;
     }
 
-    HANDLE hProcess = OpenProcess(
-        PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
-        FALSE,
-        pid
-    );
-    if (!hProcess) {
-        PrintJsonError("OpenProcess failed (try running as Administrator)", GetLastError());
-        return 1;
-    }
+    DWORD lastErr = 0;
+    const char* lastErrMsg = "OpenProcess failed";
+    DWORD firstOkPid = 0;
+    int injectedCount = 0;
 
-    size_t pathBytes = (wcslen(fullPath) + 1) * sizeof(wchar_t);
-    LPVOID remoteMem = VirtualAllocEx(hProcess, nullptr, pathBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remoteMem) {
-        DWORD err = GetLastError();
-        CloseHandle(hProcess);
-        PrintJsonError("VirtualAllocEx failed", err);
-        return 1;
-    }
+    for (int i = 0; i < pidCount; i++) {
+        DWORD pid = pids[i];
+        if (FindLoadedModule(pid, fullPath) != nullptr) {
+            if (firstOkPid == 0) firstOkPid = pid;
+            injectedCount++;
+            continue;
+        }
 
-    if (!WriteProcessMemory(hProcess, remoteMem, fullPath, pathBytes, nullptr)) {
-        DWORD err = GetLastError();
+        HANDLE hProcess = OpenProcess(
+            PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ,
+            FALSE,
+            pid
+        );
+        if (!hProcess) {
+            lastErr = GetLastError();
+            lastErrMsg = "OpenProcess failed (try running as Administrator)";
+            continue;
+        }
+
+        size_t pathBytes = (wcslen(fullPath) + 1) * sizeof(wchar_t);
+        LPVOID remoteMem = VirtualAllocEx(hProcess, nullptr, pathBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!remoteMem) {
+            lastErr = GetLastError();
+            lastErrMsg = "VirtualAllocEx failed";
+            CloseHandle(hProcess);
+            continue;
+        }
+
+        if (!WriteProcessMemory(hProcess, remoteMem, fullPath, pathBytes, nullptr)) {
+            lastErr = GetLastError();
+            lastErrMsg = "WriteProcessMemory failed";
+            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+            CloseHandle(hProcess);
+            continue;
+        }
+
+        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+        LPTHREAD_START_ROUTINE loadLibAddr = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "LoadLibraryW");
+
+        HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, loadLibAddr, remoteMem, 0, nullptr);
+        if (!hThread) {
+            lastErr = GetLastError();
+            lastErrMsg = "CreateRemoteThread failed";
+            VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+            CloseHandle(hProcess);
+            continue;
+        }
+
+        WaitForSingleObject(hThread, 10000);
+        DWORD exitCode = 0;
+        GetExitCodeThread(hThread, &exitCode);
+
+        CloseHandle(hThread);
         VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
         CloseHandle(hProcess);
-        PrintJsonError("WriteProcessMemory failed", err);
+
+        if (exitCode == 0) {
+            lastErr = 0;
+            lastErrMsg = "Remote LoadLibraryW returned NULL";
+            continue;
+        }
+
+        if (firstOkPid == 0) firstOkPid = pid;
+        injectedCount++;
+    }
+
+    if (injectedCount == 0) {
+        PrintJsonError(lastErrMsg, lastErr);
         return 1;
     }
 
-    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-    LPTHREAD_START_ROUTINE loadLibAddr = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "LoadLibraryW");
-
-    HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, loadLibAddr, remoteMem, 0, nullptr);
-    if (!hThread) {
-        DWORD err = GetLastError();
-        VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
-        PrintJsonError("CreateRemoteThread failed", err);
-        return 1;
-    }
-
-    WaitForSingleObject(hThread, 10000);
-    DWORD exitCode = 0;
-    GetExitCodeThread(hThread, &exitCode);
-
-    CloseHandle(hThread);
-    VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-    CloseHandle(hProcess);
-
-    if (exitCode == 0) {
-        PrintJsonError("Remote LoadLibraryW returned NULL", 0);
-        return 1;
-    }
-
-    printf("{\"ok\":true,\"pid\":%lu,\"injected\":true}\n", (unsigned long)pid);
+    printf("{\"ok\":true,\"pid\":%lu,\"count\":%d,\"injected\":true}\n", (unsigned long)firstOkPid, injectedCount);
     return 0;
 }
 
 static int CmdEject(const wchar_t* target, const wchar_t* dllName) {
-    DWORD pid = FindProcessByNameOrPid(target);
-    if (pid == 0) {
+    DWORD pids[64];
+    int pidCount = FindProcessesByNameOrPid(target, pids, 64);
+    if (pidCount == 0) {
         PrintJsonError("Target process not found", 0);
         return 1;
     }
 
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-    if (snap == INVALID_HANDLE_VALUE) {
-        PrintJsonError("Module snapshot failed", GetLastError());
-        return 1;
+    int ejectedCount = 0;
+    DWORD firstPid = pids[0];
+
+    for (int i = 0; i < pidCount; i++) {
+        DWORD pid = pids[i];
+        HMODULE foundMod = FindLoadedModule(pid, dllName);
+        if (!foundMod) continue;
+
+        HANDLE hProcess = OpenProcess(
+            PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION,
+            FALSE,
+            pid
+        );
+        if (!hProcess) continue;
+
+        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
+        LPTHREAD_START_ROUTINE freeLibAddr = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "FreeLibrary");
+        HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, freeLibAddr, (LPVOID)foundMod, 0, nullptr);
+        if (hThread) {
+            WaitForSingleObject(hThread, 10000);
+            CloseHandle(hThread);
+            ejectedCount++;
+        }
+        CloseHandle(hProcess);
     }
 
-    MODULEENTRY32W me;
-    me.dwSize = sizeof(me);
-    HMODULE foundMod = nullptr;
-
-    if (Module32FirstW(snap, &me)) {
-        do {
-            if (_wcsicmp(me.szModule, dllName) == 0 || _wcsicmp(me.szExePath, dllName) == 0) {
-                foundMod = me.hModule;
-                break;
-            }
-        } while (Module32NextW(snap, &me));
-    }
-    CloseHandle(snap);
-
-    if (!foundMod) {
-        printf("{\"ok\":true,\"pid\":%lu,\"ejected\":false,\"reason\":\"not_loaded\"}\n", (unsigned long)pid);
+    if (ejectedCount == 0) {
+        printf("{\"ok\":true,\"pid\":%lu,\"ejected\":false,\"reason\":\"not_loaded\"}\n", (unsigned long)firstPid);
         return 0;
     }
 
-    HANDLE hProcess = OpenProcess(
-        PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION,
-        FALSE,
-        pid
-    );
-    if (!hProcess) {
-        PrintJsonError("OpenProcess failed", GetLastError());
-        return 1;
-    }
-
-    HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-    LPTHREAD_START_ROUTINE freeLibAddr = (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "FreeLibrary");
-    HANDLE hThread = CreateRemoteThread(hProcess, nullptr, 0, freeLibAddr, (LPVOID)foundMod, 0, nullptr);
-    if (!hThread) {
-        DWORD err = GetLastError();
-        CloseHandle(hProcess);
-        PrintJsonError("CreateRemoteThread(FreeLibrary) failed", err);
-        return 1;
-    }
-
-    WaitForSingleObject(hThread, 10000);
-    CloseHandle(hThread);
-    CloseHandle(hProcess);
-
-    printf("{\"ok\":true,\"pid\":%lu,\"ejected\":true}\n", (unsigned long)pid);
+    printf("{\"ok\":true,\"pid\":%lu,\"count\":%d,\"ejected\":true}\n", (unsigned long)firstPid, ejectedCount);
     return 0;
 }
 

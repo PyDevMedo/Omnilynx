@@ -3,6 +3,10 @@ dist/
 release/
 installed_mods/
 mods_compiled/
+engine/compiler/
+Mods/
+Compiled/
+Config/
 config/last_error.log
 config/*.ps1
 *.log

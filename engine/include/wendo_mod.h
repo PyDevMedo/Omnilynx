@@ -186,6 +186,33 @@ static inline void Wh_SetStringSetting(const wchar_t* valueName, const wchar_t* 
     WritePrivateProfileStringW(L"Settings", valueName, value ? value : L"", iniPath);
 }
 
+static inline int Wh_GetIntValue(const wchar_t* valueName, int defaultValue) {
+    wchar_t iniPath[MAX_PATH];
+    Wendo_GetSettingsIniPath(iniPath, MAX_PATH);
+    return GetPrivateProfileIntW(L"Values", valueName, defaultValue, iniPath);
+}
+
+static inline void Wh_SetIntValue(const wchar_t* valueName, int value) {
+    wchar_t iniPath[MAX_PATH];
+    Wendo_GetSettingsIniPath(iniPath, MAX_PATH);
+    wchar_t buf[32];
+    _snwprintf_s(buf, 32, _TRUNCATE, L"%d", value);
+    WritePrivateProfileStringW(L"Values", valueName, buf, iniPath);
+}
+
+static inline size_t Wh_GetStringValue(const wchar_t* valueName, wchar_t* stringBuffer, size_t bufferChars) {
+    if (!stringBuffer || bufferChars == 0) return 0;
+    wchar_t iniPath[MAX_PATH];
+    Wendo_GetSettingsIniPath(iniPath, MAX_PATH);
+    return GetPrivateProfileStringW(L"Values", valueName, L"", stringBuffer, (DWORD)bufferChars, iniPath);
+}
+
+static inline void Wh_SetStringValue(const wchar_t* valueName, const wchar_t* value) {
+    wchar_t iniPath[MAX_PATH];
+    Wendo_GetSettingsIniPath(iniPath, MAX_PATH);
+    WritePrivateProfileStringW(L"Values", valueName, value ? value : L"", iniPath);
+}
+
 // Mod lifecycle callbacks implemented by the mod
 BOOL Wh_ModInit(void);
 void Wh_ModUninit(void);

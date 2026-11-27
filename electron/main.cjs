@@ -259,6 +259,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     `-DWH_MOD_ID=L"${safeId}"`,
     `-DWENDO_SETTINGS_INI=L"${escapedIni}"`,
     '-shared',
+    '-static',
     '-O2',
     `-I${ENGINE_INCLUDE}`,
     buildSrcPath,
@@ -440,16 +441,30 @@ app.whenReady().then(() => {
       }
 
       let injectedAny = false;
+      let accessDenied = false;
       let lastErr = '';
       for (const target of targets) {
         const res = await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
         try {
           const parsed = JSON.parse(res.stdout);
           if (parsed.ok) injectedAny = true;
-          else lastErr = parsed.error || 'Process not running';
+          else {
+            lastErr = parsed.error || 'Process not running';
+            if (lastErr.includes('OpenProcess') || lastErr.includes('LoadLibraryW')) {
+              accessDenied = true;
+            }
+          }
         } catch {
           lastErr = res.stderr || 'Injector error';
         }
+      }
+
+      if (!injectedAny && accessDenied) {
+        return {
+          ok: false,
+          enabled: false,
+          message: `فشل الحقن في ${targets.join(', ')}: ${lastErr}`
+        };
       }
 
       state.mods[safeId] = { ...(state.mods[safeId] || {}), enabled: true };
@@ -460,8 +475,8 @@ app.whenReady().then(() => {
         enabled: true,
         injected: injectedAny,
         message: injectedAny
-          ? `Enabled & injected into ${targets.join(', ')}`
-          : `Enabled & compiled (${targets.join(', ')} not currently running — ${lastErr})`
+          ? `تم التشغيل والحقن في ${targets.join(', ')}`
+          : `تم التفعيل — بانتظار تشغيل ${targets.join(', ')} للحقن التلقائي`
       };
     } else {
       for (const target of targets) {
@@ -772,6 +787,48 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+
+  // Auto-inject enabled mods whenever their target process opens
+  let watcherBusy = false;
+  setInterval(async () => {
+    if (watcherBusy || !fs.existsSync(ENGINE_BIN)) return;
+    watcherBusy = true;
+    try {
+      const state = readJsonSafe(STATE_FILE, { mods: {} });
+      const enabledIds = Object.entries(state.mods || {})
+        .filter(([, v]) => v && v.enabled)
+        .map(([k]) => k);
+      if (enabledIds.length === 0) return;
+
+      const listRes = await runExecFile(ENGINE_BIN, ['list']);
+      let runningNames = new Set();
+      try {
+        const parsed = JSON.parse(listRes.stdout);
+        if (parsed.ok && Array.isArray(parsed.processes)) {
+          runningNames = new Set(parsed.processes.map((p) => String(p.name || '').toLowerCase()));
+        }
+      } catch {
+        return;
+      }
+
+      for (const modId of enabledIds) {
+        const dllPath = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
+        const srcPath = findModSourceFile(modId);
+        if (!srcPath || !fs.existsSync(dllPath)) continue;
+        const code = fs.readFileSync(srcPath, 'utf8');
+        const targets = extractTargetsFromCode(code);
+        for (const target of targets) {
+          if (runningNames.has(target.toLowerCase())) {
+            await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
+          }
+        }
+      }
+    } catch {
+      // ignore background watcher errors
+    } finally {
+      watcherBusy = false;
+    }
+  }, 3000);
 });
 
 app.on('window-all-closed', () => {
