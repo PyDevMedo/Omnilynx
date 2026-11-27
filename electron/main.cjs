@@ -37,12 +37,24 @@ const STATE_FILE = path.join(CONFIG_DIR, 'state.json');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const SETTINGS_INI = path.join(CONFIG_DIR, 'mod_settings.ini');
 
+function cleanupStaleCompiledDlls() {
+  try {
+    if (!fs.existsSync(MODS_COMPILED_DIR)) return;
+    for (const f of fs.readdirSync(MODS_COMPILED_DIR)) {
+      if ((f.includes('.old.') || f.includes('.tmp.')) && f.endsWith('.dll')) {
+        try { fs.unlinkSync(path.join(MODS_COMPILED_DIR, f)); } catch {}
+      }
+    }
+  } catch {}
+}
+
 function ensureDirs() {
   for (const dir of [MODS_SOURCE_DIR, MODS_COMPILED_DIR, CONFIG_DIR, COMPILER_DIR]) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
+  cleanupStaleCompiledDlls();
   // Seed starter Omnilynx standalone mods into C:\Omnilynx\Mods if missing
   if (fs.existsSync(BUNDLED_MODS_DIR)) {
     for (const file of fs.readdirSync(BUNDLED_MODS_DIR)) {
@@ -260,6 +272,10 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   const existingPath = findModSourceFile(safeId);
   const srcPath = existingPath || path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
   const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
+  const tmpDllPath = path.join(MODS_COMPILED_DIR, `${safeId}.tmp.${Date.now()}.dll`);
+
+  // Best-effort cleanup of stale .old / .tmp DLLs left from previous locked replacements
+  cleanupStaleCompiledDlls();
 
   fs.writeFileSync(srcPath, code, 'utf8');
   const needsSdkAutoInclude =
@@ -315,7 +331,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     ...(needsSdkAutoInclude ? ['-include', path.join(ENGINE_INCLUDE, 'omnilynx_mod_sdk.hpp')] : []),
     srcPath,
     '-o',
-    dllPath,
+    tmpDllPath,
     `-L${ENGINE_LIB}`,
     '-lminhook',
     '-lkernel32',
@@ -340,9 +356,32 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   ];
 
   const res = await runExecFile(compiler, args);
+  let finalDllPath = null;
+  if (res.ok && fs.existsSync(tmpDllPath)) {
+    try {
+      // On Windows, an injected DLL cannot be overwritten/deleted while loaded,
+      // but it CAN be renamed out of the way so the new DLL takes the canonical name.
+      if (fs.existsSync(dllPath)) {
+        try {
+          fs.unlinkSync(dllPath);
+        } catch {
+          const oldPath = path.join(MODS_COMPILED_DIR, `${safeId}.old.${Date.now()}.dll`);
+          fs.renameSync(dllPath, oldPath);
+        }
+      }
+      fs.renameSync(tmpDllPath, dllPath);
+      finalDllPath = dllPath;
+    } catch {
+      // If even rename is blocked by an exclusive lock, keep the freshly compiled DLL path
+      finalDllPath = tmpDllPath;
+    }
+  } else {
+    try { if (fs.existsSync(tmpDllPath)) fs.unlinkSync(tmpDllPath); } catch {}
+  }
+
   return {
     ...res,
-    dllPath: res.ok ? dllPath : null,
+    dllPath: res.ok ? finalDllPath : null,
     compiler
   };
 }
@@ -573,6 +612,7 @@ app.whenReady().then(() => {
         !fs.existsSync(dllPath) ||
         (fs.existsSync(srcPath) && fs.statSync(srcPath).mtimeMs > dllMtime) ||
         (fs.existsSync(headerPath) && fs.statSync(headerPath).mtimeMs > dllMtime);
+      let activeDllPath = dllPath;
       if (needsCompile) {
         const comp = await compileModInternal(safeId, resolvedCode, compilerOptions);
         if (!comp.ok) {
@@ -581,6 +621,7 @@ app.whenReady().then(() => {
           dialog.showErrorBox('Omnilynx Compile Error', `${msg}\n\nLog: ${getErrorLogPath()}`);
           return { ok: false, enabled: false, message: msg };
         }
+        if (comp.dllPath) activeDllPath = comp.dllPath;
       }
 
       let injectedAny = false;
@@ -589,7 +630,7 @@ app.whenReady().then(() => {
       let lastWin32Err = 0;
 
       for (const target of targets) {
-        const res = await runExecFile(ENGINE_BIN, ['inject', target, dllPath]);
+        const res = await runExecFile(ENGINE_BIN, ['inject', target, activeDllPath]);
         let parsed = null;
         try {
           parsed = JSON.parse(res.stdout);
