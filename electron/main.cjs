@@ -270,7 +270,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   const resolvedOptions = compilerOptions || extractMetaField(code, 'compilerOptions', '');
   const extraFlags = resolvedOptions
     .split(/\s+/)
-    .filter((f) => f && f.startsWith('-'));
+    .filter((f) => f && f.startsWith('-') && f !== '-lwindowsapp');
 
   // Auto-detect Windows SDK cppwinrt include path if installed on the system
   const winrtIncludeFlags = [];
@@ -299,6 +299,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     '-fexceptions',
     '-D_WIN32_WINNT=0x0A00',
     '-DWINVER=0x0A00',
+    '-DWINRT_LEAN_AND_MEAN',
     '-DUNICODE',
     '-D_UNICODE',
     `-DWH_MOD_ID=L"${safeId}"`,
@@ -317,10 +318,12 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     dllPath,
     `-L${ENGINE_LIB}`,
     '-lminhook',
+    '-lkernel32',
     '-luser32',
     '-lgdi32',
     '-ldwmapi',
     '-lshell32',
+    '-lshcore',
     '-lcomctl32',
     '-lshlwapi',
     '-luxtheme',
@@ -330,6 +333,9 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     '-lpsapi',
     '-lversion',
     '-ldbghelp',
+    '-lruntimeobject',
+    '-ldxguid',
+    '-luuid',
     ...extraFlags
   ];
 

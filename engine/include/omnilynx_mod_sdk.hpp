@@ -17,7 +17,9 @@
 #endif
 
 #include <windows.h>
+#include <shellapi.h>
 #include <shlobj.h>
+#include <shobjidl.h>
 #include <knownfolders.h>
 #include <stdarg.h>
 #include <stdint.h>
