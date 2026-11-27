@@ -13,8 +13,11 @@ export default function ModEditorModal({ initialId, initialCode, onClose, onSave
   const handleSave = async () => {
     const res = await window.wendoAPI.saveModSource({ id: modId, code });
     if (res.ok) {
+      if (res.id) setModId(res.id);
       setLogs(`Saved to ${res.filePath}`);
       onSaved();
+    } else {
+      setLogs(`SAVE ERROR:\n${res.error || 'Failed to save mod source'}`);
     }
   };
 
@@ -40,8 +43,10 @@ export default function ModEditorModal({ initialId, initialCode, onClose, onSave
       setCompiling(false);
       return;
     }
-    const targetMatch = code.match(/\/\/\s*@include\s+(.*)/);
-    const target = targetMatch ? targetMatch[1].trim() : 'notepad.exe';
+    const includes = [...code.matchAll(/\/\/\s*@include\s+(.*)/g)]
+      .map((m) => m[1].trim())
+      .filter((t) => t && t !== '*');
+    const target = includes[0] || 'notepad.exe';
     setLogs(`Compiled: ${comp.dllPath}\nInjecting into ${target}...`);
     const inj = await window.wendoAPI.injectMod({ target, dllPath: comp.dllPath });
     setLogs((prev) => `${prev}\n${JSON.stringify(inj, null, 2)}`);

@@ -7,7 +7,7 @@ import { X, Download, CheckCircle2, FileText, Sliders, Code2, ExternalLink, Shar
 import { parseModSource } from '../utils/modParser';
 import omnilynxLogo from '../assets/omnilynx-logo.png';
 
-export default function StorePreviewModal({ item, lang = 'ar', isInstalled, installing, onClose, onInstall, onShare }) {
+export default function StorePreviewModal({ item, lang = 'ar', modsRepo = 'PyDevMedo/Omnilynx', isInstalled, installing, onClose, onInstall, onShare }) {
   const [tab, setTab] = useState('readme');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -248,7 +248,7 @@ export default function StorePreviewModal({ item, lang = 'ar', isInstalled, inst
                     {lang === 'ar' ? '🔗 رابط مشاركة المود:' : '🔗 Mod Share Link:'}
                   </div>
                   <code className="font-mono" style={{ fontSize: 11.5, wordBreak: 'break-all', userSelect: 'text' }}>
-                    {`omnilynx://install?mod=${encodeURIComponent(item.id)}&repo=${encodeURIComponent('PyDevMedo/Omnilynx')}`}
+                    {`omnilynx://install?mod=${encodeURIComponent(item.id)}&repo=${encodeURIComponent(modsRepo)}`}
                   </code>
                 </div>
                 {onShare && (

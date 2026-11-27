@@ -126,24 +126,64 @@ static inline void Wh_RemoveAllHooks(void) {
     g_wendoHookCount = 0;
 }
 
-// Settings helpers (reads from %PROGRAMDATA%\Wendo\settings\<mod>.ini or defaults)
+// Settings helpers (reads from WENDO_SETTINGS_INI passed at compile time, or %LOCALAPPDATA%\Programs\Omnilynx\Config\mod_settings.ini)
+static inline const wchar_t* Wendo_GetSettingsIniPath(wchar_t* outBuf, DWORD bufLen) {
+#ifdef WENDO_SETTINGS_INI
+    wcsncpy_s(outBuf, bufLen, WENDO_SETTINGS_INI, _TRUNCATE);
+    return outBuf;
+#else
+    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Programs\\Omnilynx\\Config\\mod_settings.ini", outBuf, bufLen);
+    if (GetFileAttributesW(outBuf) != INVALID_FILE_ATTRIBUTES) {
+        return outBuf;
+    }
+    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Omnilynx\\mod_settings.ini", outBuf, bufLen);
+    return outBuf;
+#endif
+}
+
 static inline int Wh_GetIntSetting(const wchar_t* valueName, ...) {
+    wchar_t formattedName[256];
+    va_list args;
+    va_start(args, valueName);
+    _vsnwprintf_s(formattedName, 256, _TRUNCATE, valueName, args);
+    va_end(args);
+
     wchar_t iniPath[MAX_PATH];
-    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Wendo\\mod_settings.ini", iniPath, MAX_PATH);
-    return GetPrivateProfileIntW(L"Settings", valueName, 0, iniPath);
+    Wendo_GetSettingsIniPath(iniPath, MAX_PATH);
+    return GetPrivateProfileIntW(L"Settings", formattedName, 0, iniPath);
 }
 
 static inline const wchar_t* Wh_GetStringSetting(const wchar_t* valueName, ...) {
+    wchar_t formattedName[256];
+    va_list args;
+    va_start(args, valueName);
+    _vsnwprintf_s(formattedName, 256, _TRUNCATE, valueName, args);
+    va_end(args);
+
     wchar_t iniPath[MAX_PATH];
-    ExpandEnvironmentStringsW(L"%LOCALAPPDATA%\\Wendo\\mod_settings.ini", iniPath, MAX_PATH);
+    Wendo_GetSettingsIniPath(iniPath, MAX_PATH);
     wchar_t* buf = (wchar_t*)malloc(1024 * sizeof(wchar_t));
     if (!buf) return L"";
-    GetPrivateProfileStringW(L"Settings", valueName, L"", buf, 1024, iniPath);
+    GetPrivateProfileStringW(L"Settings", formattedName, L"", buf, 1024, iniPath);
     return buf;
 }
 
 static inline void Wh_FreeStringSetting(const wchar_t* string) {
     if (string) free((void*)string);
+}
+
+static inline void Wh_SetIntSetting(const wchar_t* valueName, int value) {
+    wchar_t iniPath[MAX_PATH];
+    Wendo_GetSettingsIniPath(iniPath, MAX_PATH);
+    wchar_t buf[32];
+    _snwprintf_s(buf, 32, _TRUNCATE, L"%d", value);
+    WritePrivateProfileStringW(L"Settings", valueName, buf, iniPath);
+}
+
+static inline void Wh_SetStringSetting(const wchar_t* valueName, const wchar_t* value) {
+    wchar_t iniPath[MAX_PATH];
+    Wendo_GetSettingsIniPath(iniPath, MAX_PATH);
+    WritePrivateProfileStringW(L"Settings", valueName, value ? value : L"", iniPath);
 }
 
 // Mod lifecycle callbacks implemented by the mod

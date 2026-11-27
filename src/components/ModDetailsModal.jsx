@@ -19,6 +19,7 @@ import omnilynxLogo from '../assets/omnilynx-logo.png';
 export default function ModDetailsModal({
   mod,
   lang = 'ar',
+  modsRepo = 'PyDevMedo/Omnilynx',
   onClose,
   onSaveSettings,
   onEditCode,
@@ -63,8 +64,11 @@ export default function ModDetailsModal({
     }
     return initial;
   });
-  const [targetProc, setTargetProc] = useState(mod.parsed.meta.include?.[0] || 'notepad.exe');
+  const [targetProc, setTargetProc] = useState(
+    mod.parsed.meta.include?.find((p) => p && p !== '*') || 'notepad.exe'
+  );
   const [statusMsg, setStatusMsg] = useState('');
+  const [statusError, setStatusError] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const sanitizeLinks = (str = '') =>
@@ -85,14 +89,17 @@ export default function ModDetailsModal({
   const handleSave = async () => {
     setBusy(true);
     const res = await onSaveSettings(mod.id, formValues, mod);
+    setStatusError(res?.ok === false);
     setStatusMsg(res?.message || 'Settings saved & applied!');
     setBusy(false);
   };
 
   const handleInject = async () => {
     setBusy(true);
+    setStatusError(false);
     setStatusMsg('Compiling & injecting...');
     const res = await onCompileAndInject(mod, targetProc);
+    setStatusError(res?.ok === false);
     setStatusMsg(res.message);
     setBusy(false);
   };
@@ -100,6 +107,7 @@ export default function ModDetailsModal({
   const handleEject = async () => {
     setBusy(true);
     const res = await onEject(mod, targetProc);
+    setStatusError(res?.ok === false);
     setStatusMsg(res.message);
     setBusy(false);
   };
@@ -352,7 +360,7 @@ export default function ModDetailsModal({
                     {lang === 'ar' ? '🔗 رابط مشاركة المود:' : '🔗 Mod Share Link:'}
                   </div>
                   <code className="font-mono" style={{ fontSize: 11.5, wordBreak: 'break-all', userSelect: 'text' }}>
-                    {`omnilynx://install?mod=${encodeURIComponent(mod.id)}&repo=${encodeURIComponent('PyDevMedo/Omnilynx')}`}
+                    {`omnilynx://install?mod=${encodeURIComponent(mod.id)}&repo=${encodeURIComponent(modsRepo)}`}
                   </code>
                 </div>
                 {onShare && (
@@ -426,9 +434,9 @@ export default function ModDetailsModal({
                 marginTop: 14,
                 padding: '10px 14px',
                 borderRadius: 9,
-                background: 'rgba(16, 185, 129, 0.12)',
-                border: '1px solid rgba(16, 185, 129, 0.3)',
-                color: '#6ee7b7',
+                background: statusError ? 'rgba(239, 68, 68, 0.14)' : 'rgba(16, 185, 129, 0.12)',
+                border: statusError ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid rgba(16, 185, 129, 0.3)',
+                color: statusError ? '#fca5a5' : '#6ee7b7',
                 fontSize: 13
               }}
             >

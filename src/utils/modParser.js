@@ -101,9 +101,9 @@ export function createNewModTemplate(modId = 'my-custom-mod', modName = 'My Cust
   return `// ==WindhawkMod==
 // @id              ${modId}
 // @name            ${modName}
-// @description     Custom Windows modification built with Wendo Studio
+// @description     Custom Windows modification built with Omnilynx Studio
 // @version         1.0.0
-// @author          You
+// @author          Omnilynx User
 // @include         notepad.exe
 // @compilerOptions -luser32
 // ==/WindhawkMod==

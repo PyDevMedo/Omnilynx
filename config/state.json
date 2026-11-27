@@ -200,10 +200,10 @@
       "enabled": false
     },
     "translucent-windows": {
-      "enabled": false
+      "enabled": true
     },
     "windows-11-start-menu-styler": {
-      "enabled": false,
+      "enabled": true,
       "settings": {
         "theme": "FullScreen",
         "disableNewStartMenuLayout": "legacyClassicLayout",
@@ -245,13 +245,81 @@
       }
     },
     "windows-animations": {
-      "enabled": false
+      "enabled": true
     },
     "taskbar-dock-animation-plus": {
-      "enabled": false
+      "enabled": true
     },
     "wendo-translucent-mica": {
-      "enabled": false
+      "enabled": true
+    },
+    "alt-tab-delayer": {
+      "enabled": true
+    },
+    "cursor-motion-blur": {
+      "enabled": true
+    },
+    "omnilynx-border-accent": {
+      "enabled": true
+    },
+    "omnilynx-rounded-corners": {
+      "enabled": true
+    },
+    "windows-11-file-explorer-styler": {
+      "enabled": true
+    },
+    "windows-11-taskbar-styler": {
+      "enabled": true
+    },
+    "wendo-window-opacity": {
+      "enabled": true
+    },
+    "wendo-dark-titlebars": {
+      "enabled": true
+    },
+    "omnilynx-always-on-top": {
+      "enabled": true
+    },
+    "taskbar-volume-control": {
+      "enabled": true
+    },
+    "taskbar-start-button-colorizer": {
+      "enabled": true,
+      "settings": {
+        "color": "blue",
+        "effects": [
+          {
+            "hue": 0,
+            "$name": "Hue shift",
+            "$description": "Rotates the colors of the icon by the given amount of degrees, from 0 to 360, on top of the color which is selected above."
+          },
+          {
+            "saturation": 100,
+            "$name": "Saturation",
+            "$description": "In percent, relative to the original colors. Zero makes the icon gray."
+          },
+          {
+            "brightness": 100,
+            "$name": "Brightness",
+            "$description": "In percent, relative to the original colors. Zero makes the icon black, and values above 100 make the icon lighter, up to white."
+          },
+          {
+            "opacity": 100,
+            "$name": "Opacity",
+            "$description": "In percent."
+          }
+        ],
+        "size": 100
+      }
+    },
+    "clipboard-history-upgrade": {
+      "enabled": true
+    },
+    "chrome-ui-tweaks": {
+      "enabled": true
+    },
+    "windows-11-notification-center-styler": {
+      "enabled": true
     }
   }
 }

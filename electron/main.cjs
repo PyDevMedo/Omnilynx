@@ -1,36 +1,74 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFile, spawn } = require('child_process');
+const { execFile } = require('child_process');
 const https = require('https');
-const yaml = require('js-yaml');
 
 const isDev = !app.isPackaged;
 const ROOT_DIR = path.resolve(__dirname, '..');
-const ENGINE_BIN = path.join(ROOT_DIR, 'engine', 'bin', 'wendo_injector.exe');
-const ENGINE_INCLUDE = path.join(ROOT_DIR, 'engine', 'include');
+const INSTALL_DIR = isDev ? ROOT_DIR : path.dirname(process.execPath);
+const RESOURCES_DIR = isDev
+  ? ROOT_DIR
+  : fs.existsSync(process.resourcesPath)
+    ? process.resourcesPath
+    : path.join(INSTALL_DIR, 'resources');
 
-// Cleanly separated workspace folders
-const MODS_SOURCE_DIR = path.join(ROOT_DIR, 'installed_mods');
-const MODS_COMPILED_DIR = path.join(ROOT_DIR, 'mods_compiled');
-const CONFIG_DIR = path.join(ROOT_DIR, 'config');
+function resolveDataDir() {
+  try {
+    fs.accessSync(INSTALL_DIR, fs.constants.W_OK);
+    return INSTALL_DIR;
+  } catch {
+    return path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'Omnilynx');
+  }
+}
+
+const DATA_DIR = resolveDataDir();
+const ENGINE_BIN = path.join(RESOURCES_DIR, 'engine', 'bin', 'wendo_injector.exe');
+const ENGINE_INCLUDE = path.join(RESOURCES_DIR, 'engine', 'include');
+const BUNDLED_MODS_DIR = path.join(RESOURCES_DIR, 'installed_mods');
+
+// Dedicated Omnilynx folders inside the app's own directory
+const MODS_SOURCE_DIR = path.join(DATA_DIR, 'Mods');
+const MODS_COMPILED_DIR = path.join(DATA_DIR, 'Compiled');
+const CONFIG_DIR = path.join(DATA_DIR, 'Config');
+const COMPILER_DIR = path.join(DATA_DIR, 'Compiler');
 const STATE_FILE = path.join(CONFIG_DIR, 'state.json');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
-const SETTINGS_INI = path.join(
-  process.env.LOCALAPPDATA || path.join(app.getPath('appData'), '..', 'Local'),
-  'Wendo',
-  'mod_settings.ini'
-);
-
-const WINDHAWK_MODS_DIR = 'C:\\ProgramData\\Windhawk\\ModsSource';
-const WINDHAWK_PROFILE_FILE = 'C:\\ProgramData\\Windhawk\\userprofile.json';
+const SETTINGS_INI = path.join(CONFIG_DIR, 'mod_settings.ini');
 
 function ensureDirs() {
-  for (const dir of [MODS_SOURCE_DIR, MODS_COMPILED_DIR, CONFIG_DIR, path.dirname(SETTINGS_INI)]) {
+  for (const dir of [MODS_SOURCE_DIR, MODS_COMPILED_DIR, CONFIG_DIR, COMPILER_DIR]) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
   }
+  // Seed starter Omnilynx standalone mods into C:\Omnilynx\Mods if missing
+  if (fs.existsSync(BUNDLED_MODS_DIR)) {
+    for (const file of fs.readdirSync(BUNDLED_MODS_DIR)) {
+      if (file.startsWith('omnilynx-') || file.startsWith('wendo-')) {
+        if (file.endsWith('.omni.cpp') || file.endsWith('.wh.cpp')) {
+          const modId = stripModExt(file);
+          const targetOmni = path.join(MODS_SOURCE_DIR, `${modId}.omni.cpp`);
+          const targetWh = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
+          if (!fs.existsSync(targetOmni) && !fs.existsSync(targetWh)) {
+            fs.copyFileSync(path.join(BUNDLED_MODS_DIR, file), targetOmni);
+          }
+        }
+      }
+    }
+  }
+}
+
+function stripModExt(fileName) {
+  return fileName.replace(/\.omni\.cpp$/i, '').replace(/\.wh\.cpp$/i, '').replace(/\.cpp$/i, '');
+}
+
+function findModSourceFile(modId) {
+  for (const ext of ['.omni.cpp', '.wh.cpp', '.cpp']) {
+    const p = path.join(MODS_SOURCE_DIR, `${modId}${ext}`);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
 function readJsonSafe(filePath, fallback) {
@@ -50,66 +88,70 @@ function writeJsonSafe(filePath, data) {
 
 function findCompiler() {
   const candidates = [
-    'C:\\Program Files\\Windhawk\\Compiler\\bin\\clang++.exe',
+    path.join(COMPILER_DIR, 'bin', 'clang++.exe'),
+    path.join(COMPILER_DIR, 'bin', 'g++.exe'),
+    path.join(RESOURCES_DIR, 'engine', 'compiler', 'bin', 'clang++.exe'),
+    path.join(RESOURCES_DIR, 'engine', 'compiler', 'bin', 'g++.exe'),
     'C:\\Program Files\\LLVM\\bin\\clang++.exe',
     'C:\\msys64\\ucrt64\\bin\\g++.exe',
     'C:\\msys64\\mingw64\\bin\\g++.exe'
   ];
+
+  // Also check one level deep inside Compiler dirs (winget zip extracts a subfolder)
+  for (const dir of [COMPILER_DIR, 'C:\\Omnilynx\\Compiler']) {
+    if (fs.existsSync(dir)) {
+      try {
+        for (const entry of fs.readdirSync(dir)) {
+          const subClang = path.join(dir, entry, 'bin', 'clang++.exe');
+          const subGpp = path.join(dir, entry, 'bin', 'g++.exe');
+          if (fs.existsSync(subClang)) candidates.unshift(subClang);
+          if (fs.existsSync(subGpp)) candidates.unshift(subGpp);
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
   }
   return null;
 }
 
-function httpsGetJson(url) {
+function httpsGetRaw(url, headers = {}, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
-    const req = https.get(
-      url,
-      {
-        headers: {
-          'User-Agent': 'Wendo-Studio/1.0',
-          Accept: 'application/vnd.github.v3+json'
-        }
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              resolve(JSON.parse(data));
-            } catch {
-              reject(new Error('Invalid JSON response'));
-            }
-          } else {
-            reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
-          }
-        });
+    const req = https.get(url, { headers: { 'User-Agent': 'Omnilynx-Studio/1.0', ...headers } }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
+        res.resume();
+        const nextUrl = new URL(res.headers.location, url).toString();
+        return httpsGetRaw(nextUrl, headers, redirectsLeft - 1).then(resolve, reject);
       }
-    );
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(data);
+        } else {
+          reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+        }
+      });
+    });
     req.on('error', reject);
   });
 }
 
+async function httpsGetJson(url) {
+  const data = await httpsGetRaw(url, { Accept: 'application/vnd.github.v3+json' });
+  try {
+    return JSON.parse(data);
+  } catch {
+    throw new Error('Invalid JSON response');
+  }
+}
+
 function httpsGetText(url) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(
-      url,
-      { headers: { 'User-Agent': 'Wendo-Studio/1.0' } },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            resolve(data);
-          } else {
-            reject(new Error(`HTTP ${res.statusCode}`));
-          }
-        });
-      }
-    );
-    req.on('error', reject);
-  });
+  return httpsGetRaw(url);
 }
 
 function runExecFile(exe, args) {
@@ -136,169 +178,48 @@ function extractTargetsFromCode(code) {
   return targets.length > 0 ? targets : ['notepad.exe'];
 }
 
-function isWindhawkOnlyMod(code = '') {
-  return (
-    code.includes('windhawk_utils.h') ||
-    code.includes('windhawk_api.h') ||
-    code.includes('Wh_FindFirstSymbol') ||
-    code.includes('WindhawkUtils::') ||
-    code.includes('WH_MOD_ID') ||
-    code.includes('windhawk-tool-mod')
-  );
-}
-
 function extractMetaField(code, key, fallback = '') {
   const m = code.match(new RegExp(`//\\s*@${key}\\s+(.*)`));
   return m ? m[1].trim() : fallback;
 }
 
-function extractMetaList(code, key) {
-  const list = [];
-  const regex = new RegExp(`//\\s*@${key}\\s+(.*)`, 'g');
-  let m;
-  while ((m = regex.exec(code)) !== null) {
-    const val = m[1].trim();
-    if (val) list.push(val);
-  }
-  return list.join('|');
-}
-
-function extractDefaultSettingsFromCode(code = '') {
-  const m = code.match(/\/\/\s*==WindhawkModSettings==\s*\/\*([\s\S]*?)\*\/\s*\/\/\s*==\/WindhawkModSettings==/);
-  if (!m) return {};
-  try {
-    const parsed = yaml.load(m[1]);
-    if (!Array.isArray(parsed)) return {};
-    const out = {};
-    for (const item of parsed) {
-      if (!item || typeof item !== 'object') continue;
-      const keys = Object.keys(item).filter((k) => !k.startsWith('$'));
-      if (keys.length > 0) {
-        out[keys[0]] = item[keys[0]];
+function writeSettingsIni(state, latestSettings = null) {
+  const merged = {};
+  for (const mData of Object.values(state.mods || {})) {
+    if (mData?.settings && typeof mData.settings === 'object') {
+      for (const [k, v] of Object.entries(mData.settings)) {
+        if (v !== null && typeof v !== 'object') {
+          merged[k] = typeof v === 'boolean' ? (v ? 1 : 0) : v;
+        }
       }
     }
-    return out;
-  } catch {
-    return {};
   }
-}
-
-function ensureWindhawkRunning(restart = false) {
-  const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
-  if (!fs.existsSync(whExe)) return;
-  const args = restart ? ['-restart', '-tray-only'] : ['-tray-only'];
-  try {
-    const child = spawn(whExe, args, { detached: true, stdio: 'ignore', windowsHide: true });
-    child.unref();
-  } catch {
-    // ignore
-  }
-}
-
-async function compileAndRegisterWindhawkMod(modId, code) {
-  const compiler = findCompiler();
-  const whLib = 'C:\\Program Files\\Windhawk\\Engine\\1.7.3\\64\\windhawk.lib';
-  if (!compiler || !fs.existsSync(whLib)) {
-    return { ok: false, stderr: 'Windhawk SDK / Compiler not found.' };
-  }
-
-  const version = extractMetaField(code, 'version', '1.0.0');
-  const compilerOptions = extractMetaField(code, 'compilerOptions', '');
-  const includes = extractMetaList(code, 'include');
-  const excludes = extractMetaList(code, 'exclude');
-
-  const srcPath = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
-  fs.writeFileSync(srcPath, code, 'utf8');
-
-  const dllName = `${modId}_${version}_omnilynx.dll`;
-  const localDllPath = path.join(MODS_COMPILED_DIR, dllName);
-
-  const extraFlags = compilerOptions
-    .split(/\s+/)
-    .filter((f) => f && f.startsWith('-'));
-
-  const args = [
-    '--target=x86_64-w64-windows-gnu',
-    '-std=c++23',
-    '-O2',
-    '-shared',
-    '-DWH_MOD',
-    `-DWH_MOD_ID=L"${modId}"`,
-    `-DWH_MOD_VERSION=L"${version}"`,
-    '-DUNICODE',
-    '-D_UNICODE',
-    '-D_WIN32_WINNT=0x0A00',
-    '-DWINVER=0x0A00',
-    '-DNTDDI_VERSION=0x0A00000B',
-    '-include',
-    'windhawk_api.h',
-    srcPath,
-    whLib,
-    '-o',
-    localDllPath,
-    '-luser32',
-    '-lgdi32',
-    '-lshell32',
-    '-lversion',
-    '-lshcore',
-    '-ldwmapi',
-    '-lole32',
-    '-loleaut32',
-    '-lruntimeobject',
-    '-ladvapi32',
-    ...extraFlags
-  ];
-
-  const comp = await runExecFile(compiler, args);
-  if (!comp.ok) {
-    return { ok: false, stderr: comp.stderr || comp.stdout };
-  }
-
-  const targetDll = `C:\\ProgramData\\Windhawk\\Engine\\Mods\\64\\${dllName}`;
-  const targetSrc = `C:\\ProgramData\\Windhawk\\ModsSource\\${modId}.wh.cpp`;
-  const regPath = `HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\${modId}`;
-
-  const psScript = `
-$ErrorActionPreference = 'Stop'
-Copy-Item -Path '${localDllPath}' -Destination '${targetDll}' -Force
-Copy-Item -Path '${srcPath}' -Destination '${targetSrc}' -Force
-if (-not (Test-Path '${regPath}')) { New-Item -Path '${regPath}' -Force | Out-Null }
-Set-ItemProperty -Path '${regPath}' -Name 'LibraryFileName' -Value '${dllName}' -Type String
-Set-ItemProperty -Path '${regPath}' -Name 'Include' -Value '${includes.replace(/'/g, "''")}' -Type String
-Set-ItemProperty -Path '${regPath}' -Name 'Exclude' -Value '${excludes.replace(/'/g, "''")}' -Type String
-Set-ItemProperty -Path '${regPath}' -Name 'Architecture' -Value 'x86-64' -Type String
-Set-ItemProperty -Path '${regPath}' -Name 'Version' -Value '${version}' -Type String
-Set-ItemProperty -Path '${regPath}' -Name 'Disabled' -Value 0 -Type DWord
-`;
-  const scriptFile = path.join(CONFIG_DIR, 'install_wh_mod.ps1');
-  fs.writeFileSync(scriptFile, psScript, 'utf8');
-
-  let regRes = await runExecFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile]);
-  if (!regRes.ok) {
-    regRes = await runExecFile('powershell.exe', [
-      '-NoProfile',
-      '-Command',
-      `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptFile}'`
-    ]);
-  }
-
-  // Write default settings from ==WindhawkModSettings== if present
-  if (regRes.ok) {
-    const defaults = extractDefaultSettingsFromCode(code);
-    if (Object.keys(defaults).length > 0) {
-      await writeWindhawkModSettings(modId, defaults);
+  if (latestSettings && typeof latestSettings === 'object') {
+    for (const [k, v] of Object.entries(latestSettings)) {
+      if (v !== null && typeof v !== 'object') {
+        merged[k] = typeof v === 'boolean' ? (v ? 1 : 0) : v;
+      }
     }
   }
-
-  return { ok: regRes.ok, stderr: regRes.stderr };
+  const lines = ['[Settings]'];
+  for (const [k, v] of Object.entries(merged)) {
+    lines.push(`${k}=${String(v)}`);
+  }
+  fs.writeFileSync(SETTINGS_INI, '\ufeff' + lines.join('\r\n'), 'utf16le');
 }
 
 async function compileModInternal(modId, code, compilerOptions = '') {
-  if (isWindhawkOnlyMod(code)) {
+  if (
+    !code.includes('wendo_mod.h') &&
+    (code.includes('winrt/') ||
+      code.includes('Wh_FindFirstSymbol') ||
+      code.includes('Wh_HookSymbols') ||
+      code.includes('HookSymbols('))
+  ) {
     return {
       ok: false,
       stderr:
-        'This mod uses Windhawk PDB symbol APIs (windhawk_utils.h / Wh_FindFirstSymbol) and runs via Windhawk Engine rather than Wendo standalone DLL compiler.'
+        'هذا المود يتطلب رموز PDB الداخلية (Wh_FindFirstSymbol / HookSymbols) أو C++ WinRT ولا يمكن تشغيله بشكل مستقل بدونها.'
     };
   }
 
@@ -306,12 +227,13 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   if (!compiler) {
     return {
       ok: false,
-      stderr: 'No C++ compiler found (clang++ / g++). Install LLVM or Windhawk Compiler.'
+      stderr: 'No C++ compiler found. Click "Install Compiler" in Settings or install LLVM-MinGW into C:\\Omnilynx\\Compiler.'
     };
   }
 
   const safeId = modId.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-  const srcPath = path.join(MODS_SOURCE_DIR, `${safeId}.wh.cpp`);
+  const existingPath = findModSourceFile(safeId);
+  const srcPath = existingPath || path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
   const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
 
   fs.writeFileSync(srcPath, code, 'utf8');
@@ -323,16 +245,19 @@ async function compileModInternal(modId, code, compilerOptions = '') {
     buildSrcPath = tempBuildPath;
   }
 
-  const extraFlags = (compilerOptions || '')
+  const resolvedOptions = compilerOptions || extractMetaField(code, 'compilerOptions', '');
+  const extraFlags = resolvedOptions
     .split(/\s+/)
     .filter((f) => f && f.startsWith('-'));
 
+  const escapedIni = SETTINGS_INI.replace(/\\/g, '\\\\');
   const args = [
     '--target=x86_64-w64-windows-gnu',
     '-std=c++20',
     '-DUNICODE',
     '-D_UNICODE',
     `-DWH_MOD_ID=L"${safeId}"`,
+    `-DWENDO_SETTINGS_INI=L"${escapedIni}"`,
     '-shared',
     '-O2',
     `-I${ENGINE_INCLUDE}`,
@@ -354,132 +279,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   };
 }
 
-function flattenSettings(obj, prefix = '', out = {}) {
-  for (const [k, v] of Object.entries(obj || {})) {
-    if (k.startsWith('$')) continue;
-    const fullKey = prefix ? `${prefix}.${k}` : k;
-    if (Array.isArray(v)) {
-      v.forEach((item, idx) => {
-        if (item && typeof item === 'object') {
-          flattenSettings(item, `${fullKey}[${idx}]`, out);
-        } else {
-          out[`${fullKey}[${idx}]`] = item;
-        }
-      });
-    } else if (v && typeof v === 'object') {
-      flattenSettings(v, fullKey, out);
-    } else {
-      out[fullKey] = v;
-    }
-  }
-  return out;
-}
-
-async function writeWindhawkModSettings(modId, settingsObj) {
-  const settingsPath = `HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\${modId}\\Settings`;
-  const flat = flattenSettings(settingsObj);
-  const lines = [
-    `$ErrorActionPreference = 'Stop'`,
-    `if (-not (Test-Path '${settingsPath}')) { New-Item -Path '${settingsPath}' -Force | Out-Null }`
-  ];
-
-  for (const [k, v] of Object.entries(flat)) {
-    const safeKey = k.replace(/'/g, "''");
-    if (typeof v === 'boolean') {
-      lines.push(`Set-ItemProperty -Path '${settingsPath}' -Name '${safeKey}' -Value ${v ? 1 : 0} -Type DWord`);
-    } else if (typeof v === 'number' && Number.isInteger(v)) {
-      lines.push(`Set-ItemProperty -Path '${settingsPath}' -Name '${safeKey}' -Value ${v} -Type DWord`);
-    } else {
-      const safeVal = String(v ?? '').replace(/'/g, "''");
-      lines.push(`Set-ItemProperty -Path '${settingsPath}' -Name '${safeKey}' -Value '${safeVal}' -Type String`);
-    }
-  }
-
-  // If the mod is currently enabled (Disabled == 0), cycle Disabled 1 -> 0 so Windhawk's service reloads the new settings immediately
-  const modKeyPath = `HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\${modId}`;
-  lines.push(`if (Test-Path '${modKeyPath}') {`);
-  lines.push(`  $curDisabled = (Get-ItemProperty -Path '${modKeyPath}' -Name 'Disabled' -ErrorAction SilentlyContinue).Disabled`);
-  lines.push(`  if ($curDisabled -eq 0) {`);
-  lines.push(`    Set-ItemProperty -Path '${modKeyPath}' -Name 'Disabled' -Value 1 -Type DWord`);
-  lines.push(`    Start-Sleep -Milliseconds 200`);
-  lines.push(`    Set-ItemProperty -Path '${modKeyPath}' -Name 'Disabled' -Value 0 -Type DWord`);
-  lines.push(`  }`);
-  lines.push(`}`);
-
-  const scriptFile = path.join(CONFIG_DIR, 'save_wh_settings.ps1');
-  fs.writeFileSync(scriptFile, lines.join('\r\n'), 'utf8');
-
-  let res = await runExecFile('powershell.exe', [
-    '-NoProfile',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-File',
-    scriptFile
-  ]);
-
-  if (!res.ok) {
-    res = await runExecFile('powershell.exe', [
-      '-NoProfile',
-      '-Command',
-      `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptFile}'`
-    ]);
-  }
-  return res;
-}
-
-async function setWindhawkModDisabled(modId, disabled) {
-  const regPath = `HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\${modId}`;
-  const val = disabled ? 1 : 0;
-
-  const psScript = `
-$ErrorActionPreference = 'Stop'
-if (Test-Path '${regPath}') {
-  Set-ItemProperty -Path '${regPath}' -Name 'Disabled' -Value ${val} -Type DWord
-} else {
-  New-Item -Path '${regPath}' -Force | Out-Null
-  Set-ItemProperty -Path '${regPath}' -Name 'Disabled' -Value ${val} -Type DWord
-}
-$profilePath = '${WINDHAWK_PROFILE_FILE}'
-if (Test-Path $profilePath) {
-  $json = Get-Content $profilePath -Raw | ConvertFrom-Json
-  if ($json.mods -and $json.mods.'${modId}') {
-    $json.mods.'${modId}'.disabled = $${disabled ? 'true' : 'false'}
-    $json | ConvertTo-Json -Depth 10 | Set-Content $profilePath -Encoding UTF8
-  }
-}
-`;
-
-  const scriptFile = path.join(CONFIG_DIR, 'toggle_wh.ps1');
-  fs.writeFileSync(scriptFile, psScript, 'utf8');
-
-  let res = await runExecFile('powershell.exe', [
-    '-NoProfile',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-File',
-    scriptFile
-  ]);
-
-  if (!res.ok) {
-    res = await runExecFile('powershell.exe', [
-      '-NoProfile',
-      '-Command',
-      `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptFile}'`
-    ]);
-  }
-
-  if (!res.ok) {
-    fs.writeFileSync(
-      path.join(CONFIG_DIR, 'last_error.log'),
-      `[${new Date().toISOString()}] toggle ${modId} failed:\n${res.stderr}\n${res.stdout}\n`,
-      'utf8'
-    );
-  }
-
-  return res;
-}
-
-// Low-RAM optimizations for smooth user experience
+// Low-RAM optimizations
 app.commandLine.appendSwitch('renderer-process-limit', '1');
 app.commandLine.appendSwitch('disable-background-networking');
 app.commandLine.appendSwitch('disable-features', 'Spellcheck,AutofillServerCommunication');
@@ -492,7 +292,6 @@ async function translateTextCached(text, targetLang = 'ar') {
   if (translationCache.has(key)) return translationCache.get(key);
 
   try {
-    // Preserve markdown image tags while translating surrounding text
     const images = [];
     const masked = text.replace(/!\[[^\]]*\]\([^)]+\)/g, (match) => {
       images.push(match);
@@ -516,14 +315,16 @@ async function translateTextCached(text, targetLang = 'ar') {
 }
 
 function createWindow() {
-  const iconPath = path.join(ROOT_DIR, 'public', 'omnilynx-logo.png');
+  const icoPath = path.join(ROOT_DIR, 'public', 'omnilynx-logo.ico');
+  const pngPath = path.join(ROOT_DIR, 'public', 'omnilynx-logo.png');
+  const iconPath = fs.existsSync(icoPath) ? icoPath : fs.existsSync(pngPath) ? pngPath : undefined;
   const win = new BrowserWindow({
     width: 1360,
     height: 860,
     minWidth: 1020,
     minHeight: 680,
     title: 'Omnilynx',
-    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    icon: iconPath,
     backgroundColor: '#060911',
     titleBarStyle: 'hidden',
     titleBarOverlay: {
@@ -547,124 +348,70 @@ function createWindow() {
   }
 }
 
+app.setAppUserModelId('com.omnilynx.studio');
+
 app.whenReady().then(() => {
   ensureDirs();
 
-  // IPC: List installed mods (Windhawk + Omnilynx installed_mods/)
+  // IPC: List installed Omnilynx mods from C:\Omnilynx\Mods
   ipcMain.handle('mods:listInstalled', async () => {
     const state = readJsonSafe(STATE_FILE, { mods: {} });
-    const whProfile = readJsonSafe(WINDHAWK_PROFILE_FILE, { mods: {} });
-    const modsMap = new Map();
+    const mods = [];
+    if (!fs.existsSync(MODS_SOURCE_DIR)) return mods;
 
-    // Fast batch read of Windhawk registry Disabled states
-    const regDisabledMap = {};
-    try {
-      const regRes = await runExecFile('powershell.exe', [
-        '-NoProfile',
-        '-Command',
-        "Get-ItemProperty 'HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\*' -ErrorAction SilentlyContinue | ForEach-Object { \"$($_.PSChildName)=$($_.Disabled)\" }"
-      ]);
-      if (regRes.ok && regRes.stdout) {
-        for (const line of regRes.stdout.split(/\r?\n/)) {
-          const [k, v] = line.trim().split('=');
-          if (k) regDisabledMap[k] = v === '1';
-        }
-      }
-    } catch {
-      // ignore if registry unavailable
+    const files = fs
+      .readdirSync(MODS_SOURCE_DIR)
+      .filter((f) => f.endsWith('.omni.cpp') || f.endsWith('.wh.cpp') || f.endsWith('.cpp'));
+
+    for (const file of files) {
+      const fullPath = path.join(MODS_SOURCE_DIR, file);
+      const modId = stripModExt(file);
+      const code = fs.readFileSync(fullPath, 'utf8');
+      const compiledDll = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
+      const localState = state.mods[modId] || {};
+
+      mods.push({
+        id: modId,
+        fileName: file,
+        filePath: fullPath,
+        origin: 'omnilynx',
+        code,
+        compiled: fs.existsSync(compiledDll),
+        dllPath: compiledDll,
+        enabled: Boolean(localState.enabled),
+        settings: localState.settings || {}
+      });
     }
 
-    const scanDir = (dir, sourceOrigin) => {
-      if (!fs.existsSync(dir)) return;
-      const files = fs.readdirSync(dir).filter((f) => f.endsWith('.wh.cpp') || f.endsWith('.cpp'));
-      for (const file of files) {
-        const fullPath = path.join(dir, file);
-        const modId = file.replace(/\.wh\.cpp$/, '').replace(/\.cpp$/, '');
-        const code = fs.readFileSync(fullPath, 'utf8');
-        const compiledDll = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
-        const localState = state.mods[modId] || {};
-        const whState = whProfile.mods?.[modId] || {};
-
-        let isEnabled = false;
-        if (sourceOrigin === 'windhawk') {
-          if (modId in regDisabledMap) {
-            isEnabled = !regDisabledMap[modId];
-          } else if (typeof localState.enabled === 'boolean') {
-            isEnabled = localState.enabled;
-          } else {
-            isEnabled = whState.disabled === false;
-          }
-        } else {
-          isEnabled = Boolean(localState.enabled);
-        }
-
-        modsMap.set(modId, {
-          id: modId,
-          fileName: file,
-          filePath: fullPath,
-          origin: sourceOrigin,
-          code,
-          compiled: fs.existsSync(compiledDll),
-          dllPath: compiledDll,
-          enabled: isEnabled,
-          settings: localState.settings || whState.settings || {}
-        });
-      }
-    };
-
-    scanDir(WINDHAWK_MODS_DIR, 'windhawk');
-    scanDir(MODS_SOURCE_DIR, 'wendo');
-
-    return Array.from(modsMap.values());
+    return mods;
   });
 
   ipcMain.handle('mods:saveSource', async (_, { id, code }) => {
     const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-    const filePath = path.join(MODS_SOURCE_DIR, `${safeId}.wh.cpp`);
+    const filePath = findModSourceFile(safeId) || path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
     fs.writeFileSync(filePath, code, 'utf8');
     return { ok: true, id: safeId, filePath };
   });
 
   ipcMain.handle('mods:delete', async (_, payload) => {
     const modId = typeof payload === 'string' ? payload : payload.id;
-    const origin = typeof payload === 'object' ? payload.origin : 'wendo';
-
-    const filePath = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
+    const filePath = findModSourceFile(modId);
     const dllPath = path.join(MODS_COMPILED_DIR, `${modId}.dll`);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    if (fs.existsSync(dllPath)) fs.unlinkSync(dllPath);
 
-    if (origin === 'windhawk') {
-      const whSrc = path.join(WINDHAWK_MODS_DIR, `${modId}.wh.cpp`);
-      const regPath = `HKLM:\\SOFTWARE\\Windhawk\\Engine\\Mods\\${modId}`;
-      const psScript = `
-$ErrorActionPreference = 'SilentlyContinue'
-if (Test-Path '${regPath}') { Remove-Item -Path '${regPath}' -Recurse -Force }
-if (Test-Path '${whSrc}') { Remove-Item -Path '${whSrc}' -Force }
-$profilePath = '${WINDHAWK_PROFILE_FILE}'
-if (Test-Path $profilePath) {
-  $json = Get-Content $profilePath -Raw | ConvertFrom-Json
-  if ($json.mods -and $json.mods.PSObject.Properties['${modId}']) {
-    $json.mods.PSObject.Properties.Remove('${modId}')
-    $json | ConvertTo-Json -Depth 10 | Set-Content $profilePath -Encoding UTF8
-  }
-}
-`;
-      const scriptFile = path.join(CONFIG_DIR, 'delete_wh_mod.ps1');
-      fs.writeFileSync(scriptFile, psScript, 'utf8');
-      let res = await runExecFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptFile]);
-      if (!res.ok || fs.existsSync(whSrc)) {
-        await runExecFile('powershell.exe', [
-          '-NoProfile',
-          '-Command',
-          `Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptFile}'`
-        ]);
-      }
-      const whExe = 'C:\\Program Files\\Windhawk\\windhawk.exe';
-      if (fs.existsSync(whExe)) {
-        execFile(whExe, ['-restart', '-tray-only'], { windowsHide: true }, () => {});
+    if (filePath && fs.existsSync(ENGINE_BIN)) {
+      try {
+        const code = fs.readFileSync(filePath, 'utf8');
+        const targets = extractTargetsFromCode(code);
+        for (const target of targets) {
+          await runExecFile(ENGINE_BIN, ['eject', target, `${modId}.dll`]);
+        }
+      } catch {
+        // best-effort eject
       }
     }
+
+    try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* ignore */ }
+    try { if (fs.existsSync(dllPath)) fs.unlinkSync(dllPath); } catch { /* ignore */ }
 
     const state = readJsonSafe(STATE_FILE, { mods: {} });
     delete state.mods[modId];
@@ -672,45 +419,21 @@ if (Test-Path $profilePath) {
     return { ok: true, id: modId };
   });
 
-  // Real Toggle: compiles + injects Wendo mods, or updates Windhawk registry for Windhawk mods
-  ipcMain.handle('mods:toggle', async (_, { id, enabled, origin, code, compilerOptions }) => {
+  // Standalone Toggle: compiles + injects Omnilynx native DLLs directly
+  ipcMain.handle('mods:toggle', async (_, { id, enabled, code, compilerOptions }) => {
     const state = readJsonSafe(STATE_FILE, { mods: {} });
-
-    if (origin === 'windhawk' || isWindhawkOnlyMod(code)) {
-      state.mods[id] = { ...(state.mods[id] || {}), enabled };
-      writeJsonSafe(STATE_FILE, state);
-
-      // If downloaded from Store and not yet compiled/registered into Windhawk Engine, compile & register now!
-      const expectedWhDllDir = 'C:\\ProgramData\\Windhawk\\Engine\\Mods\\64';
-      const whSrcExists = fs.existsSync(path.join(WINDHAWK_MODS_DIR, `${id}.wh.cpp`));
-      let res;
-      if (enabled && !whSrcExists && fs.existsSync(expectedWhDllDir)) {
-        res = await compileAndRegisterWindhawkMod(id, code || '');
-      } else {
-        res = await setWindhawkModDisabled(id, !enabled);
-      }
-
-      // Ensure Windhawk tray/engine is running & reloaded asynchronously
-      if (res.ok) {
-        ensureWindhawkRunning(true);
-      }
-
-      return {
-        ok: res.ok,
-        enabled: res.ok ? enabled : !enabled,
-        message: res.ok
-          ? `Mod ${id} ${enabled ? 'compiled & enabled' : 'disabled'}!`
-          : `Failed to activate ${id}: ${res.stderr}`
-      };
-    }
-
-    // Standalone Wendo mod
-    const dllPath = path.join(MODS_COMPILED_DIR, `${id}.dll`);
+    const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+    const srcPath = findModSourceFile(safeId) || path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
+    const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
     const targets = extractTargetsFromCode(code || '');
 
     if (enabled) {
-      if (!fs.existsSync(dllPath)) {
-        const comp = await compileModInternal(id, code, compilerOptions);
+      writeSettingsIni(state);
+      const needsCompile =
+        !fs.existsSync(dllPath) ||
+        (fs.existsSync(srcPath) && fs.statSync(srcPath).mtimeMs > fs.statSync(dllPath).mtimeMs);
+      if (needsCompile) {
+        const comp = await compileModInternal(safeId, code, compilerOptions);
         if (!comp.ok) {
           return { ok: false, enabled: false, message: `Compile failed: ${comp.stderr}` };
         }
@@ -729,7 +452,7 @@ if (Test-Path $profilePath) {
         }
       }
 
-      state.mods[id] = { ...(state.mods[id] || {}), enabled: true };
+      state.mods[safeId] = { ...(state.mods[safeId] || {}), enabled: true };
       writeJsonSafe(STATE_FILE, state);
 
       return {
@@ -742,9 +465,9 @@ if (Test-Path $profilePath) {
       };
     } else {
       for (const target of targets) {
-        await runExecFile(ENGINE_BIN, ['eject', target, `${id}.dll`]);
+        await runExecFile(ENGINE_BIN, ['eject', target, `${safeId}.dll`]);
       }
-      state.mods[id] = { ...(state.mods[id] || {}), enabled: false };
+      state.mods[safeId] = { ...(state.mods[safeId] || {}), enabled: false };
       writeJsonSafe(STATE_FILE, state);
       return {
         ok: true,
@@ -754,43 +477,22 @@ if (Test-Path $profilePath) {
     }
   });
 
-  ipcMain.handle('mods:saveSettings', async (_, { id, settings, origin, code }) => {
+  ipcMain.handle('mods:saveSettings', async (_, { id, settings, code }) => {
+    const safeId = id.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
     const state = readJsonSafe(STATE_FILE, { mods: {} });
-    state.mods[id] = { ...(state.mods[id] || {}), settings };
+    state.mods[safeId] = { ...(state.mods[safeId] || {}), settings };
     writeJsonSafe(STATE_FILE, state);
+    writeSettingsIni(state, settings);
 
-    // Write flat INI for native wendo_mod.h readers
-    const lines = ['[Settings]'];
-    for (const [k, v] of Object.entries(settings || {})) {
-      const val = typeof v === 'boolean' ? (v ? 1 : 0) : v;
-      lines.push(`${k}=${String(val)}`);
-    }
-    fs.writeFileSync(SETTINGS_INI, lines.join('\r\n'), 'utf8');
-
-    // If Windhawk mod, write to HKLM\SOFTWARE\Windhawk\Engine\Mods\<id>\Settings and force live reload
-    if (origin === 'windhawk' || isWindhawkOnlyMod(code || '')) {
-      const res = await writeWindhawkModSettings(id, settings);
-      if (res.ok) {
-        ensureWindhawkRunning(true);
-      }
-      return {
-        ok: res.ok,
-        message: res.ok
-          ? 'Settings saved & applied immediately!'
-          : `Failed to save Windhawk settings: ${res.stderr}`
-      };
-    }
-
-    // If Omnilynx standalone mod is enabled, compile if needed, then eject -> wait 150ms -> re-inject
-    if (state.mods[id]?.enabled) {
-      const dllPath = path.join(MODS_COMPILED_DIR, `${id}.dll`);
+    if (state.mods[safeId]?.enabled) {
+      const dllPath = path.join(MODS_COMPILED_DIR, `${safeId}.dll`);
       if (!fs.existsSync(dllPath) && code) {
-        await compileModInternal(id, code, '');
+        await compileModInternal(safeId, code, '');
       }
       const targets = extractTargetsFromCode(code || '');
       if (fs.existsSync(dllPath)) {
         for (const target of targets) {
-          await runExecFile(ENGINE_BIN, ['eject', target, `${id}.dll`]);
+          await runExecFile(ENGINE_BIN, ['eject', target, `${safeId}.dll`]);
         }
         await new Promise((r) => setTimeout(r, 150));
         for (const target of targets) {
@@ -804,45 +506,42 @@ if (Test-Path $profilePath) {
 
   ipcMain.handle('mods:importFile', async () => {
     const result = await dialog.showOpenDialog({
-      title: 'Import Mod File (.wh.cpp / .cpp)',
+      title: 'Import Omnilynx Mod File (.omni.cpp / .wh.cpp / .cpp)',
       filters: [{ name: 'C++ Mod Files', extensions: ['cpp'] }],
       properties: ['openFile']
     });
     if (result.canceled || !result.filePaths.length) return { canceled: true };
     const src = result.filePaths[0];
-    const baseName = path.basename(src);
-    const modId = baseName.replace(/\.wh\.cpp$/, '').replace(/\.cpp$/, '');
-    const dest = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
+    const modId = stripModExt(path.basename(src)).replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+    const dest = path.join(MODS_SOURCE_DIR, `${modId}.omni.cpp`);
     fs.copyFileSync(src, dest);
     return { canceled: false, id: modId, filePath: dest };
   });
 
   ipcMain.handle('mods:importContent', async (_, { fileName, content }) => {
-    const modId = fileName.replace(/\.wh\.cpp$/, '').replace(/\.cpp$/, '').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-    const dest = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
+    const modId = stripModExt(fileName).replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
+    const dest = path.join(MODS_SOURCE_DIR, `${modId}.omni.cpp`);
     fs.writeFileSync(dest, content, 'utf8');
     return { ok: true, id: modId, filePath: dest };
   });
 
   ipcMain.handle('mods:swapFile', async (_, modId) => {
     const result = await dialog.showOpenDialog({
-      title: `Replace ${modId} with another .wh.cpp file`,
+      title: `Replace ${modId} with another mod file`,
       filters: [{ name: 'C++ Mod Files', extensions: ['cpp'] }],
       properties: ['openFile']
     });
     if (result.canceled || !result.filePaths.length) return { canceled: true };
-    const dest = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
+    const dest = findModSourceFile(modId) || path.join(MODS_SOURCE_DIR, `${modId}.omni.cpp`);
     fs.copyFileSync(result.filePaths[0], dest);
     return { canceled: false, id: modId, filePath: dest };
   });
 
   ipcMain.handle('mods:duplicate', async (_, modId) => {
-    const whFile = path.join(WINDHAWK_MODS_DIR, `${modId}.wh.cpp`);
-    const wendoFile = path.join(MODS_SOURCE_DIR, `${modId}.wh.cpp`);
-    const src = fs.existsSync(wendoFile) ? wendoFile : whFile;
-    if (!fs.existsSync(src)) return { ok: false, error: 'Source file not found' };
+    const src = findModSourceFile(modId);
+    if (!src) return { ok: false, error: 'Source file not found' };
     const newId = `${modId}-custom`;
-    const dest = path.join(MODS_SOURCE_DIR, `${newId}.wh.cpp`);
+    const dest = path.join(MODS_SOURCE_DIR, `${newId}.omni.cpp`);
     fs.copyFileSync(src, dest);
     return { ok: true, id: newId, filePath: dest };
   });
@@ -855,6 +554,30 @@ if (Test-Path $profilePath) {
   // IPC: Compile C++ mod into native x64 DLL
   ipcMain.handle('engine:compile', async (_, { id, code, compilerOptions }) => {
     return await compileModInternal(id, code, compilerOptions);
+  });
+
+  // IPC: Install standalone LLVM-MinGW compiler into C:\Omnilynx\Compiler
+  ipcMain.handle('engine:installCompiler', async () => {
+    if (!fs.existsSync(COMPILER_DIR)) {
+      fs.mkdirSync(COMPILER_DIR, { recursive: true });
+    }
+    const res = await runExecFile('winget', [
+      'install',
+      '--id',
+      'MartinStorsjo.LLVM-MinGW.UCRT',
+      '--exact',
+      '--location',
+      COMPILER_DIR,
+      '--accept-package-agreements',
+      '--accept-source-agreements',
+      '--silent'
+    ]);
+    const compilerPath = findCompiler();
+    return {
+      ok: Boolean(compilerPath) || res.ok,
+      compilerPath,
+      message: compilerPath ? `Compiler installed at ${compilerPath}` : res.stderr || res.stdout
+    };
   });
 
   // IPC: Inject / Eject via native wendo_injector.exe
@@ -891,10 +614,13 @@ if (Test-Path $profilePath) {
   ipcMain.handle('engine:info', async () => ({
     compilerPath: findCompiler(),
     injectorPath: fs.existsSync(ENGINE_BIN) ? ENGINE_BIN : null,
+    installDir: INSTALL_DIR,
+    resourcesDir: RESOURCES_DIR,
+    dataDir: DATA_DIR,
     modsDir: MODS_SOURCE_DIR,
     compiledDir: MODS_COMPILED_DIR,
     configDir: CONFIG_DIR,
-    windhawkDetected: fs.existsSync(WINDHAWK_MODS_DIR)
+    compilerDir: COMPILER_DIR
   }));
 
   // IPC: Explore Store (GitHub)
@@ -903,9 +629,9 @@ if (Test-Path $profilePath) {
     const apiUrl = `https://api.github.com/repos/${repo}/contents/mods`;
     const items = await httpsGetJson(apiUrl);
     return items
-      .filter((item) => item.name.endsWith('.wh.cpp'))
+      .filter((item) => item.name.endsWith('.omni.cpp') || item.name.endsWith('.wh.cpp'))
       .map((item) => ({
-        id: item.name.replace(/\.wh\.cpp$/, ''),
+        id: stripModExt(item.name),
         fileName: item.name,
         downloadUrl: item.download_url,
         htmlUrl: item.html_url,
@@ -940,10 +666,9 @@ if (Test-Path $profilePath) {
         .replace('https://github.com/', 'https://raw.githubusercontent.com/')
         .replace('/blob/', '/');
       const parts = downloadUrl.split('/');
-      const last = parts[parts.length - 1] || 'shared-mod.wh.cpp';
-      modId = last.replace(/\.wh\.cpp$/, '').replace(/\.cpp$/, '');
+      const last = parts[parts.length - 1] || 'shared-mod.omni.cpp';
+      modId = stripModExt(last);
     } else {
-      // Allow plain mod ID too
       modId = link.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
       downloadUrl = `https://raw.githubusercontent.com/PyDevMedo/Omnilynx/main/mods/${modId}.wh.cpp`;
     }
@@ -953,7 +678,7 @@ if (Test-Path $profilePath) {
     try {
       const code = await httpsGetText(downloadUrl);
       const safeId = modId.replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-      const dest = path.join(MODS_SOURCE_DIR, `${safeId}.wh.cpp`);
+      const dest = path.join(MODS_SOURCE_DIR, `${safeId}.omni.cpp`);
       fs.writeFileSync(dest, code, 'utf8');
       return { ok: true, id: safeId, filePath: dest };
     } catch (e) {
@@ -1032,7 +757,7 @@ if (Test-Path $profilePath) {
     return await runExecFile('powershell.exe', [
       '-NoProfile',
       '-Command',
-      'Stop-Process -Name explorer -Force; Start-Process explorer.exe'
+      'Stop-Process -Name explorer -Force; Start-Sleep -Milliseconds 700; if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }'
     ]);
   });
 

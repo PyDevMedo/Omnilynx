@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('wendoAPI', {
   ejectMod: (payload) => ipcRenderer.invoke('engine:eject', payload),
   listProcesses: () => ipcRenderer.invoke('engine:listProcesses'),
   getEngineInfo: () => ipcRenderer.invoke('engine:info'),
+  installCompiler: () => ipcRenderer.invoke('engine:installCompiler'),
 
   // Explore (GitHub Store)
   fetchStoreIndex: (repoUrl) => ipcRenderer.invoke('store:fetchIndex', repoUrl),

@@ -19,12 +19,34 @@
     "files": [
       "dist/**/*",
       "public/**/*",
-      "electron/**/*",
-      "engine/**/*"
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "engine",
+        "to": "engine"
+      },
+      {
+        "from": "installed_mods",
+        "to": "installed_mods",
+        "filter": [
+          "omnilynx-*.wh.cpp",
+          "wendo-*.wh.cpp"
+        ]
+      }
     ],
     "win": {
       "target": "nsis",
-      "icon": "public/omnilynx-logo.png"
+      "icon": "public/omnilynx-logo.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": true,
+      "include": "build/installer.nsh"
     }
   },
   "dependencies": {

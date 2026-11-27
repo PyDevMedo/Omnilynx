@@ -48,7 +48,7 @@ const I18N = {
     navStore: '🛒 متجر المودات',
     navSettings: '⚙️ الإعدادات',
     newMod: '✨ + مود جديد',
-    importMod: '📥 استيراد .wh.cpp',
+    importMod: '📥 استيراد .omni.cpp',
     openFolder: '📂 مجلد المودات',
     tipTitle: '💡 نصيحة سريعة',
     tipBody: 'اضغط على زر الباور الصغير ⏻ في أي كارت لتشغيل أو إيقاف المود فوراً.',
@@ -96,7 +96,7 @@ const I18N = {
     navStore: '🛒 Explore Store',
     navSettings: '⚙️ Settings',
     newMod: '✨ + New Mod',
-    importMod: '📥 Import .wh.cpp',
+    importMod: '📥 Import .omni.cpp',
     openFolder: '📂 Open Mods Folder',
     tipTitle: '💡 Quick Tip',
     tipBody: 'Click the compact power button ⏻ on any card to toggle a mod on or off instantly.',
@@ -153,6 +153,7 @@ export default function App() {
   const [storeLoading, setStoreLoading] = useState(false);
   const [storeError, setStoreError] = useState('');
   const [storeSearch, setStoreSearch] = useState('');
+  const [storeLimit, setStoreLimit] = useState(60);
   const [installingId, setInstallingId] = useState(null);
   const [shareLinkInput, setShareLinkInput] = useState('');
   const [storeMetaCache, setStoreMetaCache] = useState({});
@@ -229,39 +230,66 @@ export default function App() {
   const activeCount = useMemo(() => mods.filter((m) => m.enabled).length, [mods]);
   const installedIds = useMemo(() => new Set(mods.map((m) => m.id)), [mods]);
 
+  const extractPreviewImage = (readme = '') => {
+    const mdMatch = readme.match(/!\[[^\]]*\]\(\s*(https?:\/\/[^\s)]+)/);
+    if (mdMatch) return mdMatch[1];
+    const htmlMatch = readme.match(/<img[^>]+src=["'](https?:\/\/[^"']+)["']/i);
+    return htmlMatch ? htmlMatch[1] : null;
+  };
+
   const filteredStore = useMemo(() => {
     const q = storeSearch.toLowerCase();
-    return storeMods.filter((m) => !q || m.id.toLowerCase().includes(q));
-  }, [storeMods, storeSearch]);
+    return storeMods.filter((m) => {
+      if (!q) return true;
+      const meta = storeMetaCache[m.id];
+      return (
+        m.id.toLowerCase().includes(q) ||
+        (meta?.name && meta.name.toLowerCase().includes(q)) ||
+        (meta?.desc && meta.desc.toLowerCase().includes(q))
+      );
+    });
+  }, [storeMods, storeSearch, storeMetaCache]);
 
-  // Lazy-fetch metadata & thumbnail images for the visible Store cards
+  // Lazy-fetch metadata & thumbnail images for all visible Store cards in parallel batches
   useEffect(() => {
     if (page !== 'explore' || filteredStore.length === 0) return;
     let cancelled = false;
-    const visible = filteredStore.slice(0, 18).filter((item) => !storeMetaCache[item.id]);
+    const visible = filteredStore.slice(0, storeLimit).filter((item) => !storeMetaCache[item.id]);
     if (visible.length === 0) return;
 
     (async () => {
-      for (const item of visible) {
+      const BATCH_SIZE = 8;
+      for (let i = 0; i < visible.length; i += BATCH_SIZE) {
         if (cancelled) break;
-        try {
-          const code = await window.wendoAPI.fetchStoreModSource({ downloadUrl: item.downloadUrl });
-          if (cancelled) break;
-          const parsed = parseModSource(code, item.id);
-          const imgMatch = (parsed.readme || '').match(/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/);
-          setStoreMetaCache((prev) => ({
-            ...prev,
-            [item.id]: {
-              name: parsed.meta.name || item.id,
-              desc: parsed.meta.description || '',
-              version: parsed.meta.version || '1.0.0',
-              author: parsed.meta.author || 'Omnilynx',
-              category: parsed.category,
-              previewImg: imgMatch ? imgMatch[1] : null
+        const batch = visible.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(
+          batch.map(async (item) => {
+            try {
+              const code = await window.wendoAPI.fetchStoreModSource({ downloadUrl: item.downloadUrl });
+              const parsed = parseModSource(code, item.id);
+              return {
+                id: item.id,
+                meta: {
+                  name: parsed.meta.name || item.id,
+                  desc: parsed.meta.description || '',
+                  version: parsed.meta.version || '1.0.0',
+                  author: parsed.meta.author || 'Omnilynx',
+                  category: parsed.category,
+                  previewImg: extractPreviewImage(parsed.readme || '')
+                }
+              };
+            } catch {
+              return null;
             }
-          }));
-        } catch {
-          // ignore individual fetch failures
+          })
+        );
+        if (cancelled) break;
+        const updates = {};
+        for (const r of results) {
+          if (r) updates[r.id] = r.meta;
+        }
+        if (Object.keys(updates).length > 0) {
+          setStoreMetaCache((prev) => ({ ...prev, ...updates }));
         }
       }
     })();
@@ -269,7 +297,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [page, filteredStore]);
+  }, [page, filteredStore, storeLimit]);
 
   const handleToggleMod = async (mod) => {
     setErrorBanner('');
@@ -291,37 +319,59 @@ export default function App() {
     showToast(res.message || `${mod.parsed.meta.name} ${next ? 'enabled' : 'disabled'}`, res.ok === false);
   };
 
+  const activeSelectedMod = useMemo(
+    () => (selectedMod ? mods.find((m) => m.id === selectedMod.id) || selectedMod : null),
+    [mods, selectedMod]
+  );
+
   const handleApplyGlassPreset = async () => {
     const targets = ['wendo-dark-titlebars', 'wendo-translucent-mica', 'wendo-window-opacity'];
-    for (const m of mods) {
-      if (targets.includes(m.id) && !m.enabled) {
-        await window.wendoAPI.toggleMod({
+    const matched = mods.filter((m) => targets.includes(m.id));
+    if (matched.length === 0) {
+      showToast(lang === 'ar' ? 'لم يتم العثور على مودات باقة الزجاج.' : 'Glass preset mods not found.', true);
+      return;
+    }
+    let failed = 0;
+    for (const m of matched) {
+      if (!m.enabled) {
+        const res = await window.wendoAPI.toggleMod({
           id: m.id,
           enabled: true,
           origin: m.origin,
           code: m.code,
           compilerOptions: m.parsed.meta.compilerOptions
         });
+        if (res?.ok === false) failed++;
       }
     }
     await loadInstalled();
-    showToast('💎 Glass Preset Applied!');
+    if (failed > 0) {
+      showToast(lang === 'ar' ? `تعذر تفعيل ${failed} مود من باقة الزجاج.` : `Failed to enable ${failed} glass preset mod(s).`, true);
+    } else {
+      showToast(lang === 'ar' ? '💎 تم تطبيق باقة الزجاج!' : '💎 Glass Preset Applied!');
+    }
   };
 
   const handleDisableAll = async () => {
+    let failed = 0;
     for (const m of mods) {
       if (m.enabled) {
-        await window.wendoAPI.toggleMod({
+        const res = await window.wendoAPI.toggleMod({
           id: m.id,
           enabled: false,
           origin: m.origin,
           code: m.code,
           compilerOptions: m.parsed.meta.compilerOptions
         });
+        if (res?.ok === false) failed++;
       }
     }
     await loadInstalled();
-    showToast('All mods disabled.');
+    if (failed > 0) {
+      showToast(lang === 'ar' ? `تعذر إيقاف ${failed} مود.` : `Failed to disable ${failed} mod(s).`, true);
+    } else {
+      showToast(lang === 'ar' ? 'تم إيقاف جميع المودات.' : 'All mods disabled.');
+    }
   };
 
   const handleInstallStoreMod = async (item, preloadedCode = null) => {
@@ -331,7 +381,11 @@ export default function App() {
       await window.wendoAPI.saveModSource({ id: item.id, code });
       await loadInstalled();
       setPreviewStoreItem(null);
-      showToast(`Installed ${item.id}`);
+      showToast(
+        lang === 'ar'
+          ? `✅ تم تثبيت ${item.id} — اضغط على زر التشغيل ⏻ لتفعيله`
+          : `Installed ${item.id} — click the power button ⏻ to enable it`
+      );
     } catch (e) {
       showToast(`Failed to install ${item.id}: ${e.message}`, true);
     }
@@ -418,17 +472,6 @@ export default function App() {
   };
 
   const handleCompileAndInject = async (mod, target) => {
-    if (mod.origin === 'windhawk') {
-      const res = await window.wendoAPI.toggleMod({
-        id: mod.id,
-        enabled: true,
-        origin: 'windhawk',
-        code: mod.code,
-        compilerOptions: mod.parsed.meta.compilerOptions
-      });
-      await loadInstalled();
-      return { ok: res.ok, message: res.message };
-    }
     const comp = await window.wendoAPI.compileMod({
       id: mod.id,
       code: mod.code,
@@ -606,8 +649,7 @@ export default function App() {
               <div className="mod-grid">
                 {filteredMods.map((mod) => {
                   const copy = getLocalizedModCopy(mod, lang);
-                  const imgMatch = (mod.parsed.readme || '').match(/!\[[^\]]*\]\((https?:\/\/[^)]+)\)/);
-                  const previewImg = imgMatch ? imgMatch[1] : null;
+                  const previewImg = extractPreviewImage(mod.parsed.readme || '');
                   return (
                   <article key={mod.id} className={`glass-card ${mod.enabled ? 'is-on' : ''}`} style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
@@ -628,7 +670,14 @@ export default function App() {
 
                     {previewImg && (
                       <div style={{ height: 110, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border-subtle)', background: '#0b0e14' }}>
-                        <img src={previewImg} alt={copy.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        <img
+                          src={previewImg}
+                          alt={copy.name}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          onError={(e) => {
+                            e.currentTarget.parentElement.style.display = 'none';
+                          }}
+                        />
                       </div>
                     )}
 
@@ -689,7 +738,10 @@ export default function App() {
                           const next = !isOn;
                           setTweaks((prev) => ({ ...prev, [item.key]: next }));
                           const res = await window.wendoAPI.applyTweak({ key: item.key, value: next });
-                          showToast(res.message || 'Applied!');
+                          if (res?.ok === false) {
+                            setTweaks((prev) => ({ ...prev, [item.key]: !next }));
+                          }
+                          showToast(res?.message || 'Applied!', res?.ok === false);
                         }}
                       >
                         <Power size={15} />
@@ -736,52 +788,70 @@ export default function App() {
               {storeLoading ? (
                 <p style={{ color: 'var(--text-secondary)' }}>Loading from GitHub...</p>
               ) : (
-                <div className="mod-grid">
-                  {filteredStore.slice(0, 60).map((item) => {
-                    const isInstalled = installedIds.has(item.id);
-                    const meta = storeMetaCache[item.id];
-                    return (
-                      <article key={item.id} className="glass-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
-                          <div>
-                            <div style={{ fontSize: 14.5, fontWeight: 700 }}>{meta?.name || item.id}</div>
-                            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
-                              {meta ? `v${meta.version} · ${meta.author}` : `${item.fileName} · ${(item.size / 1024).toFixed(1)} KB`}
+                <>
+                  <div className="mod-grid">
+                    {filteredStore.slice(0, storeLimit).map((item) => {
+                      const isInstalled = installedIds.has(item.id);
+                      const meta = storeMetaCache[item.id];
+                      return (
+                        <article key={item.id} className="glass-card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                            <div>
+                              <div style={{ fontSize: 14.5, fontWeight: 700 }}>{meta?.name || item.id}</div>
+                              <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
+                                {meta ? `v${meta.version} · ${meta.author}` : `${item.fileName} · ${(item.size / 1024).toFixed(1)} KB`}
+                              </div>
                             </div>
+                            {meta?.category && <span className="badge badge-indigo">{meta.category}</span>}
                           </div>
-                          {meta?.category && <span className="badge badge-indigo">{meta.category}</span>}
-                        </div>
 
-                        {meta?.previewImg && (
-                          <div style={{ height: 110, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border-subtle)', background: '#0b0e14' }}>
-                            <img src={meta.previewImg} alt={meta.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          {meta?.previewImg && (
+                            <div style={{ height: 110, borderRadius: 10, overflow: 'hidden', border: '1px solid var(--border-subtle)', background: '#0b0e14' }}>
+                              <img
+                                src={meta.previewImg}
+                                alt={meta.name}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                onError={(e) => {
+                                  e.currentTarget.parentElement.style.display = 'none';
+                                }}
+                              />
+                            </div>
+                          )}
+
+                          {meta?.desc && (
+                            <p style={{ fontSize: 12.2, color: 'var(--text-secondary)', lineHeight: 1.5, flex: 1 }}>
+                              {meta.desc}
+                            </p>
+                          )}
+
+                          <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 6 }}>
+                            <button className="btn" onClick={() => setPreviewStoreItem(item)}>{t.previewBtn}</button>
+                            <button className="btn" onClick={() => handleShareMod(item.id)} title={lang === 'ar' ? 'مشاركة' : 'Share'}>
+                              <Share2 size={14} />
+                            </button>
+                            <button
+                              className={`btn ${isInstalled ? 'btn-success' : 'btn-primary'}`}
+                              style={{ flex: 1 }}
+                              disabled={installingId === item.id}
+                              onClick={() => handleInstallStoreMod(item)}
+                            >
+                              {isInstalled ? t.reinstallBtn : installingId === item.id ? '...' : t.installBtn}
+                            </button>
                           </div>
-                        )}
-
-                        {meta?.desc && (
-                          <p style={{ fontSize: 12.2, color: 'var(--text-secondary)', lineHeight: 1.5, flex: 1 }}>
-                            {meta.desc}
-                          </p>
-                        )}
-
-                        <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 6 }}>
-                          <button className="btn" onClick={() => setPreviewStoreItem(item)}>{t.previewBtn}</button>
-                          <button className="btn" onClick={() => handleShareMod(item.id)} title={lang === 'ar' ? 'مشاركة' : 'Share'}>
-                            <Share2 size={14} />
-                          </button>
-                          <button
-                            className={`btn ${isInstalled ? 'btn-success' : 'btn-primary'}`}
-                            style={{ flex: 1 }}
-                            disabled={installingId === item.id}
-                            onClick={() => handleInstallStoreMod(item)}
-                          >
-                            {isInstalled ? t.reinstallBtn : installingId === item.id ? '...' : t.installBtn}
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                  {filteredStore.length > storeLimit && (
+                    <div style={{ display: 'flex', justifyContent: 'center', marginTop: 20 }}>
+                      <button className="btn btn-primary" onClick={() => setStoreLimit((n) => n + 60)}>
+                        {lang === 'ar'
+                          ? `عرض المزيد (${filteredStore.length - storeLimit} مود إضافي)`
+                          : `Load More (${filteredStore.length - storeLimit} remaining)`}
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -799,13 +869,28 @@ export default function App() {
               <div className="glass-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>Omnilynx Native Engine</div>
                 <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+                  <div>Install Dir: <code>{engineInfo.installDir}</code></div>
+                  <div>Workspace: <code>{engineInfo.dataDir}</code></div>
                   <div>Mods: <code>{engineInfo.modsDir}</code></div>
                   <div>DLLs: <code>{engineInfo.compiledDir}</code></div>
                   <div>Compiler: <code>{engineInfo.compilerPath || 'Not found'}</code></div>
                 </div>
-                <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+                <div style={{ display: 'flex', gap: 10, marginTop: 6, flexWrap: 'wrap' }}>
                   <button className="btn" onClick={() => window.wendoAPI.openModsFolder()}><FolderOpen size={14} /> {t.openFolder}</button>
                   <button className="btn" onClick={async () => { await window.wendoAPI.restartExplorer(); showToast('Explorer restarted.'); }}><RotateCcw size={14} /> Restart Explorer</button>
+                  {!engineInfo.compilerPath && (
+                    <button
+                      className="btn btn-primary"
+                      onClick={async () => {
+                        showToast(lang === 'ar' ? 'جاري تثبيت المترجم...' : 'Installing compiler...');
+                        const res = await window.wendoAPI.installCompiler();
+                        setEngineInfo(await window.wendoAPI.getEngineInfo());
+                        showToast(res.message || 'Done', !res.ok);
+                      }}
+                    >
+                      <Download size={14} /> {lang === 'ar' ? 'تثبيت المترجم تلقائياً' : 'Install Compiler'}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -819,10 +904,11 @@ export default function App() {
         </div>
       )}
 
-      {selectedMod && (
+      {activeSelectedMod && (
         <ModDetailsModal
-          mod={selectedMod}
+          mod={activeSelectedMod}
           lang={lang}
+          modsRepo={appConfig.modsRepo || 'PyDevMedo/Omnilynx'}
           onClose={() => setSelectedMod(null)}
           onSaveSettings={async (id, settings, modObj) => {
             const res = await window.wendoAPI.saveModSettings({ id, settings, origin: modObj?.origin, code: modObj?.code });
@@ -852,6 +938,7 @@ export default function App() {
           <StorePreviewModal
             item={previewStoreItem}
             lang={lang}
+            modsRepo={appConfig.modsRepo || 'PyDevMedo/Omnilynx'}
             isInstalled={installedIds.has(previewStoreItem.id)}
             installing={installingId === previewStoreItem.id}
             onClose={() => setPreviewStoreItem(null)}
