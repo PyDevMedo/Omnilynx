@@ -227,7 +227,7 @@ async function compileModInternal(modId, code, compilerOptions = '') {
   if (!compiler) {
     return {
       ok: false,
-      stderr: 'No C++ compiler found. Click "Install Compiler" in Settings or install LLVM-MinGW into C:\\Omnilynx\\Compiler.'
+      stderr: 'لم يتم العثور على المترجم — افتح الإعدادات واضغط على «تثبيت المترجم تلقائياً».'
     };
   }
 
@@ -556,16 +556,18 @@ app.whenReady().then(() => {
     return await compileModInternal(id, code, compilerOptions);
   });
 
-  // IPC: Install standalone LLVM-MinGW compiler into C:\Omnilynx\Compiler
+  // IPC: Install standalone LLVM-MinGW compiler into app's Compiler folder
   ipcMain.handle('engine:installCompiler', async () => {
     if (!fs.existsSync(COMPILER_DIR)) {
       fs.mkdirSync(COMPILER_DIR, { recursive: true });
     }
+    await runExecFile('winget', ['uninstall', '--id', 'MartinStorsjo.LLVM-MinGW.UCRT', '--silent']);
     const res = await runExecFile('winget', [
       'install',
       '--id',
       'MartinStorsjo.LLVM-MinGW.UCRT',
       '--exact',
+      '--force',
       '--location',
       COMPILER_DIR,
       '--accept-package-agreements',
